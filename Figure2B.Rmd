@@ -1,0 +1,314 @@
+---
+title: "Figure2B"
+author: "Farah"
+date: "4/1/2020"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+Input is the Output of Data_PreProcessing.Rmd
+
+Chunk 1: Import packages and files and set theme.
+
+Chunk 2: Generate scatter plots for diversity over time.
+
+Chunk 3: Fit linear model for rate of change in diversity and generate barplots.
+
+Chunk 4: Scatter plot of diversity vs. library size for each sample.
+
+
+Chunk 1: Import packages and files and set theme.
+```{r setup, include=FALSE}
+#remotes::install_github("coolbutuseless/ggpattern")
+
+library(tidyverse)
+library(vegan)
+library(GGally)
+library(ggcorrplot)
+library(ggpattern)
+
+
+#Set theme and colors for the entire document
+theme_set(theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.text=element_text(size=12),
+        axis.title=element_text(size=14), legend.text=element_text(size=12), legend.title=element_text(size=14)))
+
+Clim_col <- "firebrick1"
+Nlim_col <- "royalblue2"
+Switch_col <- "purple3"
+PulseAS_col <- "darkgreen"
+PulseGln_col <- "pink"
+
+
+#setwd("/Volumes/GoogleDrive/My Drive/Abdul-Rahman 2019/scripts/")
+setwd("/Users/farah/Google Drive/Abdul-Rahman et al Barseq")
+#setwd("/Users/farah/Google Drive File Stream/My Drive/Abdul-Rahman et al Barseq/")
+
+#Import Data
+Data_format <- read_tsv("data/FilteredData.txt", col_names=TRUE)
+
+#Exclude highest performing genotypes
+Data_format_exc <- Data_format %>%
+            mutate(YFL021W = ifelse(Condition %in% c("Nlim", "PulseAS", "PulseGln"), 0, YFL021W),
+                   YDR277C = ifelse(Condition %in% c("Clim"), 0, YDR277C),
+                   YPL056C = ifelse(Condition %in% c("Switch"), 0, YPL056C),
+                   YOR091W = ifelse(Condition %in% c("PulseAS"), 0, YOR091W))
+
+#Import Data from tab-delimited file
+ 
+#Data <- read_tsv("BARseq_Tidy_Clean.txt",col_names=TRUE)
+#cor_Data <- Data[,-c(5, 6, 7)] %>%
+#              spread(Strain, Sum_Tag) %>%
+#                unite(Sample1, Condition, Replicate) %>%
+#                  unite(Sample, Sample1, TimePoint)
+
+#cor_Data1 <- as.data.frame(t(cor_Data[,-1 ]))
+
+#colnames(cor_Data1) <- t(cor_Data[,1])
+#supp_cor_table <- as.data.frame(cor(cor_Data1))
+
+#Write out full library correlation table
+#write_tsv(supp_cor_table, "/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/tables/Full_Library_Correlations")
+
+#cor_Data2 <- as.data.frame(cor_Data1[-1,])
+#All the data, this does not only compare same condition or replicates
+#cor_t0 <- dplyr::select(cor_Data1, grep("_0",colnames(cor_Data1)))
+#p.mat.t0 <- cor_pmat(cor_t0)
+
+#pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Correlations_t0.pdf" )
+
+#ggcorrplot(cor(cor_t0)[,], hc.order = TRUE, lab = TRUE)
+
+#dev.off()
+
+#cor_t72 <- dplyr::select(cor_Data1, grep("_72",colnames(cor_Data1)))
+#p.mat.t72 <- cor_pmat(cor_t72)
+
+#pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Correlations_t72.pdf" )
+
+#ggcorrplot(cor(cor_t72)[,], hc.order = TRUE, lab = TRUE)
+
+#dev.off()
+
+#cor_t120 <- dplyr::select(cor_Data1, grep("_120",colnames(cor_Data1)))
+#p.mat.t120 <- cor_pmat(cor_t120)
+
+#pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Correlations_t120.pdf" )
+
+#ggcorrplot(cor(cor_t120)[,], hc.order = TRUE, lab = TRUE)
+
+#dev.off()
+
+#cor_t168 <- dplyr::select(cor_Data1, grep("_168",colnames(cor_Data1)))
+#p.mat.t168 <- cor_pmat(cor_t168)
+
+#pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Correlations_t168.pdf" )
+
+#ggcorrplot(cor(cor_t168)[,], hc.order = TRUE, lab = TRUE)
+
+#dev.off()
+
+#cor_t240 <- dplyr::select(cor_Data1, grep("_240",colnames(cor_Data1)))
+#p.mat.t240 <- cor_pmat(cor_t240)
+
+#pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Correlations_t240.pdf" )
+
+#ggcorrplot(cor(cor_t240)[,], hc.order = TRUE, lab = TRUE)
+
+#dev.off()
+
+#p.mat <- cor_pmat(cor_Data1)
+#ggcorrplot(cor(cor_Data1)[1:40,1:40], hc.order = TRUE, type = "lower", p.mat = p.mat[1:40,1:40])
+
+```
+
+QC for replicate similarity
+```{r}
+#Data_spread_rep <- Data  %>%
+#  dplyr::select(TimePoint, Condition, Replicate, Strain, Sum_Tag) %>%
+#    spread(Replicate, Sum_Tag)
+
+#ggplot(Data_spread_rep, aes(x = log(`1`), y = log(`2`))) +
+#  geom_point() +
+#  facet_wrap(~Condition)
+
+#corr_test <- Data_spread_rep %>%
+#  mutate(`1` = replace_na(`1`, 0),
+#         `2` = replace_na(`2`, 0),
+#         `3` = replace_na(`3`, 0)) %>%
+#    group_by(Condition, TimePoint) %>%
+#      mutate(Corr_1vs2 = cor( `1`, `2`),
+#              Corr_1vs3 = cor( `1`, `3`), 
+#              Corr_2vs3 = cor( `2`, `3`)) %>%
+#        gather(Replicate, Sum_Tag, -Condition, -Strain, -TimePoint, -Corr_1vs2, -Corr_1vs3, -Corr_2vs3) %>%
+#    filter(!(Corr_1vs2 < 0.5 & Replicate == "2"))
+
+#ggplot(Data, aes(x = log(UP), y = log(DOWN))) +
+#  geom_point() +
+#  facet_wrap(~Condition)
+
+#cor.test(Data$UP, Data$DOWN)
+
+#Data_spread_rep_up <- Data %>%
+#  dplyr::select(-Sum_Tag, -Tag_Ratio, -DOWN) %>%
+#    spread(Replicate, UP)
+
+#ggplot(Data_spread_rep_up, aes(x = log(`2`), y = log(`3`))) +
+#  geom_point() +
+#  facet_wrap(~Condition)
+
+#cor.test(Data_spread_rep_up$`1`, Data_spread_rep_up$`2`)
+
+#What happens if we exclude libraries with the lowest correlations, lower than 0.5 (should this be 0.6?)
+```
+
+
+
+Chunk 2: Generate scatter plots for diversity over time.
+```{r cars}
+#This tests the filtering based on correlation
+#Data <- corr_test
+
+#Data_format <- Data[, -c(4,5,6)] %>%
+#  spread(Strain, Sum_Tag) %>%
+#    ungroup() %>%
+#    select(-TimePoint, -Condition, -Replicate)
+#    mutate(AdjLibraryCountSums = rowSums(dplyr::select(., -TimePoint, -Condition, -Replicate), na.rm = T)) %>%
+#      filter(AdjLibraryCountSums > 0)
+
+#Replicate_filtered_Data <- Data_format
+
+#write_tsv(Replicate_filtered_Data, "/Users/farah/Google Drive/Abdul-Rahman et al Barseq/data/ReplicateFilteredData.txt")
+
+#AdjLibraryCountSums is the total libary size after combining the UP and DN tags
+Div_Counts <- Data_format  %>%
+   dplyr::select(-TimePoint, -Condition, -Replicate, -AdjLibraryCountSums) %>%
+      mutate(ShannonsIndex = diversity(.,index="shannon")) %>%
+        dplyr::select(ShannonsIndex) %>%
+          cbind(., dplyr::select(Data_format, TimePoint, Condition, Replicate, AdjLibraryCountSums)) %>%
+            mutate(Data = "Full")
+
+Div_Counts_combined <- Data_format_exc  %>%
+   dplyr::select(-TimePoint, -Condition, -Replicate, -AdjLibraryCountSums) %>%
+      mutate(ShannonsIndex = diversity(.,index="shannon")) %>%
+        dplyr::select(ShannonsIndex) %>%
+          cbind(., dplyr::select(Data_format_exc, TimePoint, Condition, Replicate, AdjLibraryCountSums)) %>%
+            mutate(Data = "Excluded") %>%
+              rbind(., Div_Counts) %>%
+                mutate(Data = fct_relevel(Data, "Full", "Excluded"))
+
+p1 <- ggplot(filter(Div_Counts_combined, Condition %in% c("Clim","Nlim","Switch"), Data == "Full"), aes(x=as.numeric(TimePoint), y= ShannonsIndex, color = Condition)) +
+#ggplot(filter(Filtered_Tidy_Shannon, Condition %in% c("Clim", "Nlim", "Switch")), aes(x=as.numeric(TimePoint), y=Diversity_Index, color=Condition, shape=Tag, linetype = Condition)) +
+  geom_smooth(method = "lm", aes(group=Condition)) +
+  scale_color_manual(values=c(Clim_col, Nlim_col, Switch_col)) +
+  geom_point(size = 3) +
+#  geom_point(shape=21, colour = "black",size=2) +
+  ylab("Shannon's Diversity Index") +
+  ylim(0, 8.5) +
+#  scale_linetype_manual(values= c ( "Nlim" = 1, "Clim" = 1,"Switch" =  2)) +
+  xlab("Time (hrs)")
+
+ggsave(plot = p1, height=6, width=8, dpi=200, filename="figures/Figure2/Figure2B-1.pdf", useDingbats=FALSE)
+
+p2 <- ggplot(Div_Counts_combined, aes(x=as.numeric(TimePoint), y=ShannonsIndex, color=Condition)) +
+  geom_smooth(method = "lm", aes(group=Condition)) +
+  scale_color_manual(values=c(Clim_col, Nlim_col, PulseAS_col, PulseGln_col, Switch_col)) +
+  geom_point(size = 3) +
+  ylab("Shannon's Diversity Index") +
+  ylim(0, 8.5) +
+  xlab("Time (hrs)")
+
+ggsave(plot = p2, height=6, width=8, dpi=200, filename="supplement/figures/Figure2B-1.pdf", useDingbats=FALSE)
+```
+
+Chunk 3: Fit linear model for rate of change in diversity and generate barplots.
+```{r pressure, echo=FALSE}
+
+#Variance vs Diversity.
+div_lin_fit <- function(dat) {
+  the_fit <- lm(as.numeric(ShannonsIndex) ~ as.numeric(TimePoint), dat)
+  setNames(data.frame(t(coef(the_fit)), confint(the_fit, 'as.numeric(TimePoint)', level=0.95)), c("intercept", "slope", "low_ci","hi_ci"))
+}
+
+gfits_diversity_all <- Div_Counts_combined %>%
+  group_by(Condition, Data) %>% 
+  do(div_lin_fit(.))
+
+gfits_diversity_individual <- Div_Counts_combined %>%
+  group_by(Condition,Replicate) %>% 
+  do(div_lin_fit(.))
+
+stats_diversity <- gfits_diversity_individual %>%
+  group_by(Condition) %>%
+    mutate(Avg = mean(slope)) %>%
+      mutate(SD = sd(slope))
+
+indi_div_Summary <- gfits_diversity_individual %>%
+  group_by(Condition) %>%
+    summarise(
+    n=n(),
+    mean=mean(slope),
+    sd=sd(slope),
+    var = var(slope)
+  ) %>%
+  mutate( se=sd/sqrt(n))  %>%
+  mutate( ci=se * 1.96)
+
+p3 <- ggplot(filter(gfits_diversity_all, Condition %in% c("Clim", "Nlim", "Switch"), Data == "Full"), aes(y=slope, x=Condition, fill = Condition, pattern = Data)) +
+#ggplot(filter(gfits_diversity_all, Condition %in% c("Clim", "Nlim", "Switch")), aes(y=slope, x=Condition, fill = Condition)) +
+  geom_bar(stat = "identity", position = position_dodge(preserve = "single")) +
+  geom_errorbar(aes(ymin=low_ci, ymax=hi_ci), width=.2, position=position_dodge(.9)) +
+  ylim(-0.028, 0) +
+  ylab("Rate of Change in Diversity") +
+  scale_fill_manual(values=c(Clim_col, Nlim_col, Switch_col))
+
+ggsave(plot = p3, height=4, width=4, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure2/Figure2B-2.pdf", useDingbats=FALSE)
+
+p4 <- ggplot(gfits_diversity_all, aes(y=slope, x=Condition, fill = Condition, pattern = Data)) +
+  geom_bar_pattern(stat = "identity", position = position_dodge(preserve = "single"),
+                   color = "black",
+                   pattern_fill = "black",
+                   pattern_angle = 45,
+                   pattern_density = 0.1,
+                   pattern_spacing = 0.025,
+                   pattern_key_scale_factor = 0.6) +  
+  geom_errorbar(aes(ymin=low_ci, ymax=hi_ci), width=.2, position=position_dodge(.9)) +
+  ylim(-0.028, 0) +
+  ylab("Rate of Change in Diversity") +
+  facet_wrap(~Data) +
+  scale_fill_manual(values=c(Clim_col, Nlim_col, PulseAS_col, PulseGln_col, Switch_col)) +
+  scale_pattern_manual(values = c(Excluded = "stripe", Full = "none")) +
+  guides(pattern = guide_legend(override.aes = list(fill = "white")),
+         fill = guide_legend(override.aes = list(pattern = "none")))
+
+ggsave(plot = p4, height=6, width=8, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/suppfig2.pdf", useDingbats=FALSE)
+
+```
+
+Chunk 4: Scatter plot of diversity vs. library size for each sample.
+```{r}
+# Test correlation between the two values
+Div_Counts_combined_filt <- filter(Div_Counts_combined, Data == "Full")
+p5_cor <- round(cor.test(Div_Counts_combined_filt$AdjLibraryCountSums, Div_Counts_combined_filt$ShannonsIndex)$estimate, digits = 3)
+
+# cor = 0.1055899, p-value = 0.2177, i.e no correlation is evident
+
+# Plot
+p5 <- ggplot(Div_Counts_combined_filt, aes(y = ShannonsIndex, x = AdjLibraryCountSums, color = Condition, size = TimePoint)) +
+  geom_point(alpha = 0.6) +
+  ylab("Shannon's Diversity Index") +
+  xlab("Adjusted Library Size") +
+  scale_color_manual(values=c(Clim_col, Nlim_col, PulseAS_col, PulseGln_col, Switch_col)) +
+  annotate("text", x = 5.5E6, y = 6.5, label = paste("Corr = ", p5_cor)) +
+#  facet_wrap
+
+ggsave(plot = p5, height=6, width=8, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Figure2B-2.pdf", useDingbats=FALSE)
+  
+```
+
+Save all figures as PDFs
+```{r}
+
+```

@@ -1,0 +1,404 @@
+---
+title: "Data_PreProcessing"
+author: "Farah"
+date: "10/11/2018"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    toc: yes
+--- 
+
+Summary: This document reads in raw sequencing data and performs quality control and filtration of data for downstream analyses.
+
+BARseq using the pooled prototrophic single-gene deletion library was performed in triplicate for five different conditions. Samples were collected every 24 hours for a total of ten timepoints per replicate per condition. 1) Ammonium-Sulfate limitation, 2) Glucose limitation, 3) Switching between Ammonium-Sulfate limitation and Glucose limitation every 30 hours, 4) Ammonium-Sulfate limitation with 40 uM Ammonium-Sulfate pulse every three hours, and 5) Ammonium-Sulfate limitation with 40uM Glutamine pulse every three hours.
+
+## 1. Introduction
+```{r}
+#Set directory
+library(tidyverse)
+
+setwd("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/data")
+
+#Import Data from tab-delimited file
+BAR_data_CNS<-read_tsv("Counts.txt",col_names = TRUE)
+BAR_data_pulse<-read_tsv("Counts_Extended_Pulse.txt",col_names = TRUE)
+
+#Import  list of sample IDs + ExpNames for two sequencing runs
+Sample_index_90<-read.table("BARseq_90_Index.txt")
+Sample_index_60<-read.table("BARseq_60_Index.txt")
+
+#Import Sample Sheets for two sequencing runs
+Sample_sheet_90<-read.csv("Sample_BARseq_90_.csv",header = FALSE)
+colnames(Sample_sheet_90)<-c("Samples","MetaData")
+
+Sample_sheet_60<-read.csv("Sample_BARseq_60_.csv",header = FALSE)
+colnames(Sample_sheet_60)<-c("Samples","MetaData")
+
+#Arrange sample sheet and metadata in the same order to merge together
+Sample_sheet_90<-Sample_sheet_90 %>%
+  arrange(Samples)
+Sample_sheet_60<-Sample_sheet_60 %>%
+  arrange(Samples)
+
+ColumnNames_90<-paste0(rep(Sample_sheet_90[,2],each=2), rep(c("_DOWN","_UP"),90))
+ColumnNames_60<-paste0(rep(Sample_sheet_60[,2],each=2), rep(c("_DOWN","_UP"),60))
+
+#Remove false positive indices that are not in the 90 index list of sequenced barcodes
+Clean_Index_90<-gsub("_DOWN","", colnames(BAR_data_CNS))
+Clean_Index_90<-gsub("_UP","", Clean_Index_90)
+
+BARseq_data_CNS<-rbind(BAR_data_CNS,Clean_Index_90)
+
+#Add a column for Strain name
+My_BARseq_data_CNS<-cbind(BAR_data_CNS[,1],BAR_data_CNS[,which(BARseq_data_CNS[5928,] %in% Sample_index_90[,1])])
+
+My_BARseq_data_CNS<-My_BARseq_data_CNS[,order(colnames(My_BARseq_data_CNS))]
+colnames(My_BARseq_data_CNS)<-c(ColumnNames_90,"Strain")
+
+#Repeat data processing for second sequencing run
+Clean_Index_60<-gsub("_DOWN","",colnames(BAR_data_pulse))
+Clean_Index_60<-gsub("_UP","",Clean_Index_60)
+
+BARseq_data_pulse<-rbind(BAR_data_pulse,Clean_Index_60)
+My_BARseq_data_pulse<-cbind(BAR_data_pulse[,1],BAR_data_pulse[,which(BARseq_data_pulse[5928,] %in% Sample_index_60[,1])])
+
+My_BARseq_data_pulse<-My_BARseq_data_pulse[,order(colnames(My_BARseq_data_pulse))]
+colnames(My_BARseq_data_pulse)<-c(ColumnNames_60,"Strain")
+
+#Get the library size and His3 WT-control values and append them to the metadata stored as column names
+His_Ind_CNS<-which(My_BARseq_data_CNS$Strain=="YOR202W")
+colnames(My_BARseq_data_CNS)<-c(paste0(paste0(
+  paste0(
+    colnames(My_BARseq_data_CNS)[1:180],(paste0(
+      "_",colSums(My_BARseq_data_CNS[,1:180])))),paste0(
+        "_",My_BARseq_data_CNS[His_Ind_CNS,1:180])),paste0("_",seq(1,180,1))),"Strain")
+
+His_Ind_pulse<-which(My_BARseq_data_pulse$Strain=="YOR202W")
+colnames(My_BARseq_data_pulse)<-c(paste0(paste0(
+  paste0(
+    colnames(My_BARseq_data_pulse)[1:120],(paste0(
+      "_",colSums(My_BARseq_data_pulse[,1:120])))),paste0(
+        "_",My_BARseq_data_pulse[His_Ind_pulse,1:120])),paste0("_",seq(181,300,1))),"Strain")
+
+#Tidy the data and use column descriptors as variables
+Tidy_CNS<-gather(My_BARseq_data_CNS,key=Sample,value=Counts,-Strain) %>%
+  separate(Sample,into=c("Chemostat","TimePoint","Condition","Replicate","Tag","LibrarySize","HIS3","SampleNumber"),sep="_")
+
+Tidy_pulse<-gather(My_BARseq_data_pulse,key=Sample,value=Counts,-Strain) %>%
+  separate(Sample,into=c("Chemostat","TimePoint","Condition","Replicate","Tag","LibrarySize","HIS3","SampleNumber"),sep="_")
+
+#Normalize counts by LibrarySize and His3 and add these as columns to the data
+Tidy_Norm_CNS <- Tidy_CNS %>%
+  mutate(LibNormCounts=Counts/as.integer(LibrarySize),HisNormCounts=Counts/as.integer(HIS3))
+
+Tidy_Norm_pulse <- Tidy_pulse %>%
+  mutate(LibNormCounts=Counts/as.integer(LibrarySize),HisNormCounts=Counts/as.integer(HIS3))
+
+#Combine all the data into one enormous tibble.
+All_Tidy<-rbind(Tidy_Norm_CNS,Tidy_Norm_pulse)
+
+#One more possible piece of info is the aggreagate of the tags. I will spread then mutate and gather.
+#I can just make two matrices, one with merged up and dn tags and one with separate.
+
+#Test <- All_Tidy %>%
+#  spread(Tag, Counts)
+```
+
+
+## 2. Sequencing Quality Control
+The library size mean = 1,288,942. The library size median = 1,293,083
+Library size less than 100,000 is filtered out leaving 255 libraries out of 300
+
+```{r}
+#Generate barplots of up and dn tags for 150 libraries. And total counts for each library.
+Tidy_Str <- All_Tidy %>%
+  filter(Strain == "YAL008W")
+
+Tidy_Str_filtered <- Tidy_Str %>%
+  filter(as.numeric(LibrarySize) > 100000) #filtering by 1000000 = 195 or 100000 = 255 libraries, around half the set.
+
+#Generate supplementary table with excluded timepoints
+excluded_libraries <- Tidy_Str %>%
+  filter(as.numeric(LibrarySize) < 100000) %>%
+    select(Condition, TimePoint, Replicate, Tag, LibrarySize) %>%
+      spread(TimePoint, LibrarySize)
+
+write_excel_csv(excluded_libraries, "/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/tables/Excluded_Libraries")
+
+#Print library size distribution which shows a dip between two distinct distributions
+p1 <- ggplot(Tidy_Str,aes(x=as.numeric(LibrarySize), fill=Tag)) +
+  geom_histogram() +
+  scale_fill_manual(values = c("darkgoldenrod4", "lightgoldenrod2")) +
+  geom_vline(xintercept = 100000, lty = "dashed") +
+  xlab("Library Size") +
+  ylab("Count")
+
+pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Figure2B-3", width=12, height=6)
+
+p1
+
+dev.off() 
+
+#Get the mean library size
+Lib_Means <- mean(as.numeric(Tidy_Str[,c(7)]), na.rm=T) #1, 288, 942
+Lib_Median <- median(as.numeric(Tidy_Str[,c(7)]), na.rm=T) #1, 293, 083
+
+#Barplot of distribution of counts with all UP and DOWN tags summed - the aggregate.
+ggplot(Tidy_Str_filtered,aes(x=TimePoint,y=as.numeric(LibrarySize), fill=Tag)) +
+  geom_bar(stat="identity") +
+  ylab("Library Size") +
+  xlab("Condition") +
+  facet_wrap(Condition~Replicate, ncol = 3)  +
+  scale_fill_manual(values=c("darkgray","lightgray")) +
+    theme(axis.text=element_text(size=10),
+      axis.title=element_text(size=20,face="bold"),
+      legend.text=element_text(size=16),
+      legend.title=element_text(size=20,face="bold"),
+      panel.background = element_rect(fill = "white",
+                                      colour = "black",
+                                      size = 0.75, linetype = "solid"),
+      panel.grid.major = element_line(size = 0.5, linetype = 'dashed',
+                                      colour = "gray"), 
+      panel.grid.minor = element_line(size = 0.25, linetype = 'dashed',
+                                      colour = "gray"))
+
+#Barplot of distribution of counts with all sample timepoints summed - the aggregate.
+ggplot(Tidy_Str,aes(x=Condition,y=as.numeric(LibrarySize), fill=Tag)) +
+  geom_bar(stat="identity") +
+  ylab("Library Size") +
+  xlab("Condition") +
+  facet_wrap(~Replicate) +
+  scale_fill_manual(values=c("darkgray","lightgray")) +
+    theme(axis.text=element_text(size=10),
+      axis.title=element_text(size=20,face="bold"),
+      legend.text=element_text(size=16),
+      legend.title=element_text(size=20,face="bold"),
+      panel.background = element_rect(fill = "white",
+                                      colour = "black",
+                                      size = 0.75, linetype = "solid"),
+      panel.grid.major = element_line(size = 0.5, linetype = 'dashed',
+                                      colour = "gray"), 
+      panel.grid.minor = element_line(size = 0.25, linetype = 'dashed',
+                                      colour = "gray"))
+
+#Filtering: ~5000 strains. For a couple of hundred counts per strain on average, 5000*200=1e+06
+All_Tidy_Filtered <- All_Tidy %>%
+  filter(as.numeric(LibrarySize) > 100000)
+```
+
+##3. 
+To filter out low count strain counts for each strain is summed accross all libraries. Strains with sums below 50 counts are filtered out.
+
+```{r}
+#Histogram of counts in library 300, as an example of a distribution.
+Sample300 <- All_Tidy_Filtered %>%
+  filter(as.numeric(SampleNumber) == 300)
+
+#Several libraries were independently tested and it seems that counts below 10 belong to a separate distribution and should be filtered out. Should there be a minimum count implemented? Maybe it makes more sense to filter based on sum of counts.
+ggplot(Sample300,aes(x=Counts)) + 
+  geom_histogram(bins = 100,size=1, alpha=0.8, fill = "purple") +
+  scale_fill_manual(values = ("purple")) +
+  scale_x_log10() +
+  xlab("Reads per Strain ") +
+  ylab("Count")  +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=20,face="bold"),
+        legend.text=element_text(size=18),
+        legend.title=element_text(size=20,face="bold"),
+        panel.background = element_rect(fill = "white",
+                                        colour = "black",
+                                        size = 0.75, linetype = "solid"),
+        panel.grid.major = element_line(size = 0.5, linetype = 'dashed',
+                                        colour = "gray"), 
+        panel.grid.minor = element_line(size = 0.25, linetype = 'dashed',
+                                        colour = "gray"))
+
+
+# Plot the aggregate of counts of all libraries.
+ggplot(All_Tidy_Filtered, aes(x=Counts, fill= "blue")) + 
+  geom_histogram(bins = 100,size = 1, alpha = 0.8) +
+  scale_fill_manual(values = ("purple")) +
+  scale_x_log10() +
+  xlab("Aggregate Counts") +
+  ylab("Frequency")  +
+  facet_wrap(~Tag) +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=20,face="bold"),
+        legend.text=element_text(size=18),
+        legend.title=element_text(size=20,face="bold"),
+        panel.background = element_rect(fill = "white",
+                                        colour = "black",
+                                        size = 0.75, linetype = "solid"),
+        panel.grid.major = element_line(size = 0.5, linetype = 'dashed',
+                                        colour = "gray"), 
+        panel.grid.minor = element_line(size = 0.25, linetype = 'dashed',
+                                        colour = "gray"))
+
+Tidy_Filtered_Sub <- All_Tidy_Filtered[,c(1,3,4,5,6,7,9,10)] #Subset metadata and counts for all strains
+Tidy_Strain_Counts <- spread(Tidy_Filtered_Sub, Strain, Counts)
+rownames(Tidy_Strain_Counts) <- Tidy_Strain_Counts[,6]
+Tidy_Counts <- Tidy_Strain_Counts[,c(7:5931)] 
+
+Tidy_Counts_ColSums <- as.data.frame(colSums(Tidy_Counts))
+colnames(Tidy_Counts_ColSums) <- "Count_Sums"
+
+#Plot the sum of counts per strain across all libraries, Should I filter by 1000 summed counts?
+p2 <- ggplot(Tidy_Counts_ColSums, aes(x=Count_Sums)) + 
+  geom_histogram(bins = 100, size=1, alpha=0.8, fill= "blue") +
+  scale_fill_manual(values = ("purple")) +
+  scale_x_log10() +
+  xlab("Sum Counts per Strain") +
+  ylab("Count")  +
+  geom_vline(xintercept = 1000, lty = "dashed") +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=20,face="bold"),
+        legend.text=element_text(size=18),
+        legend.title=element_text(size=20,face="bold"),
+        panel.background = element_rect(fill = "white",
+                                        colour = "black",
+                                        size = 0.75, linetype = "solid"),
+        panel.grid.major = element_line(size = 0.5, linetype = 'dashed',
+                                        colour = "gray"), 
+        panel.grid.minor = element_line(size = 0.25, linetype = 'dashed',
+                                        colour = "gray"))
+
+pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Figure2B-4", width=12, height=6)
+
+p2
+
+dev.off() 
+
+#Libraries are filtered by any strain that has less than 1000 counts across all samples.
+Less_Than_Thou_Ind <- which(Tidy_Counts_ColSums < 1000)
+Tidy_Counts_Filtered<- Tidy_Counts[,-Less_Than_Thou_Ind]
+
+```
+
+
+```{r}
+# Clean Data by filtering based on sum of counts across strains
+Filtered_Ind <- which(All_Tidy_Filtered$Strain %in% colnames(Tidy_Counts_Filtered))
+Clean_Filter1 <- All_Tidy_Filtered[Filtered_Ind,c(1,3,4,5,6,7,9,10)]
+Clean_Filter2 <- spread(Clean_Filter1, Strain, Counts)
+
+Clean_Filter_Final<- select(Clean_Filter2, -SampleNumber, -LibrarySize) %>%
+  gather(Strain, Counts, -TimePoint, -Condition, -Replicate,-Tag) %>%
+      spread(Tag, Counts) %>%
+       mutate(DOWN = replace(DOWN, which(is.na(DOWN)), 0)) %>%
+         mutate(UP = replace(UP, which(is.na(UP)), 0)) %>%
+          mutate(Tag_Ratio = (DOWN+1)/(UP+1)) %>%
+            mutate(Sum_Tag = DOWN + UP)
+
+#Filter replicates that have low correlation
+Data <- read_tsv("BARseq_Tidy_Clean.txt",col_names=TRUE)
+cor_Data <- Data[,-c(5, 6, 7)] %>%
+              spread(Strain, Sum_Tag) %>%
+                unite(Sample1, Condition, Replicate) %>%
+                  unite(Sample, Sample1, TimePoint)
+
+cor_Data1 <- as.data.frame(t(cor_Data[,-1 ]))
+
+colnames(cor_Data1) <- t(cor_Data[,1])
+supp_cor_table <- as.data.frame(cor(cor_Data1))
+
+#Write out full library correlation table
+write_tsv(supp_cor_table, "/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/tables/Supplemental table 1")
+
+#cor_Data2 <- as.data.frame(cor_Data1[-1,])
+#All the data, this does not only compare same condition or replicates
+cor_t0 <- dplyr::select(cor_Data1, grep("_0",colnames(cor_Data1)))
+p.mat.t0 <- cor_pmat(cor_t0)
+
+pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Correlations_t0.pdf" )
+
+ggcorrplot(cor(cor_t0)[,], hc.order = TRUE, lab = TRUE)
+
+dev.off()
+
+cor_t72 <- dplyr::select(cor_Data1, grep("_72",colnames(cor_Data1)))
+p.mat.t72 <- cor_pmat(cor_t72)
+
+pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Correlations_t72.pdf" )
+
+ggcorrplot(cor(cor_t72)[,], hc.order = TRUE, lab = TRUE)
+
+dev.off()
+
+cor_t120 <- dplyr::select(cor_Data1, grep("_120",colnames(cor_Data1)))
+p.mat.t120 <- cor_pmat(cor_t120)
+
+pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Correlations_t120.pdf" )
+
+ggcorrplot(cor(cor_t120)[,], hc.order = TRUE, lab = TRUE)
+
+dev.off()
+
+cor_t168 <- dplyr::select(cor_Data1, grep("_168",colnames(cor_Data1)))
+p.mat.t168 <- cor_pmat(cor_t168)
+
+pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Correlations_t168.pdf" )
+
+ggcorrplot(cor(cor_t168)[,], hc.order = TRUE, lab = TRUE)
+
+dev.off()
+
+cor_t240 <- dplyr::select(cor_Data1, grep("_240",colnames(cor_Data1)))
+p.mat.t240 <- cor_pmat(cor_t240)
+
+pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Correlations_t240.pdf" )
+
+ggcorrplot(cor(cor_t240)[,], hc.order = TRUE, lab = TRUE)
+
+dev.off()
+
+p.mat <- cor_pmat(cor_Data1)
+```
+
+QC for replicate similarity
+```{r}
+Data_spread_rep <- Data  %>%
+  dplyr::select(TimePoint, Condition, Replicate, Strain, Sum_Tag) %>%
+    spread(Replicate, Sum_Tag)
+
+ggplot(Data_spread_rep, aes(x = log(`1`), y = log(`2`))) +
+  geom_point() +
+  facet_wrap(~Condition)
+
+corr_test <- Data_spread_rep %>%
+  mutate(`1` = replace_na(`1`, 0),
+         `2` = replace_na(`2`, 0),
+         `3` = replace_na(`3`, 0)) %>%
+    group_by(Condition, TimePoint) %>%
+      mutate(Corr_1vs2 = cor( `1`, `2`),
+              Corr_1vs3 = cor( `1`, `3`), 
+              Corr_2vs3 = cor( `2`, `3`)) %>%
+        gather(Replicate, Sum_Tag, -Condition, -Strain, -TimePoint, -Corr_1vs2, -Corr_1vs3, -Corr_2vs3) %>%
+    filter(!(Corr_1vs2 < 0.5 & Replicate == "2"))
+
+ggplot(Data, aes(x = log(UP), y = log(DOWN))) +
+  geom_point() +
+  facet_wrap(~Condition)
+
+cor.test(Data$UP, Data$DOWN)
+
+Data_spread_rep_up <- Data %>%
+  dplyr::select(-Sum_Tag, -Tag_Ratio, -DOWN) %>%
+    spread(Replicate, UP)
+
+ggplot(Data_spread_rep_up, aes(x = log(`2`), y = log(`3`))) +
+  geom_point() +
+  facet_wrap(~Condition)
+
+cor.test(Data_spread_rep_up$`1`, Data_spread_rep_up$`2`)
+
+#Exclude libraries with replicate correlation lower than 0.5
+
+Data_format <- corr_test[, -c(4,5,6)] %>%
+  spread(Strain, Sum_Tag) %>%
+    ungroup() %>%
+    mutate(AdjLibraryCountSums = rowSums(dplyr::select(., -TimePoint, -Condition, -Replicate), na.rm = T)) %>%
+      filter(AdjLibraryCountSums>0)
+
+write_tsv(Data_format, "/Users/farah/Google Drive/Abdul-Rahman et al Barseq/data/FilteredData.txt")
+```

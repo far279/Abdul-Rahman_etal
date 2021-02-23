@@ -1,0 +1,610 @@
+---
+title: "Figure1"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+---
+title: "Figure_1"
+author: "Farah"
+start date: "6/4/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+The goal of this document is to generate 'Figure 1' of the BARseq paper. This figure defines the environment in switching conditions based on both modelling approaches and empirical data.
+
+Chunk 1: Import packages and files, set theme
+Chunk 2: Analyze empirical data
+Chunk 3: generates Switch conditions from AS-lim to Glu-lim
+
+Each of these chunks will display 4 panels 1) AS levels, 2) Glu levels, 3) Cell Density, 4) Growth rate.
+
+```{r}
+#Load packages
+library(deSolve)
+library(tidyverse)
+
+#Set theme and colors for the entire document
+theme_set(theme_bw()+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()))
+Clim_col <- "firebrick1"
+Nlim_col <- "royalblue2"
+Switch_col <- "purple3"
+PulseAS_col <- "darkgreen"
+PulseGln_col <- "pink"
+
+#Cell density data
+Cell_density_data <- read_tsv("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/data/Cell_Counts_Switch1.tsv")
+
+Cell_data <- Cell_density_data[,1:13] %>%
+  gather(Sample, Cell_Density, -TimePoint, -Date, -Hour,-Time) %>%
+   separate(Sample,into=c("Condition", "Replicate")) %>%
+     filter(Cell_Density != "NA")
+
+#Carbon data
+Carbon_data <- read_csv("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/data/Glucose_Assay_Full_20190905.csv")
+
+#Nitrogen data
+Nitrogen_data <- read_csv("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/data/Nitrogen_Assay_FA_20190616.csv")
+
+```
+
+
+```{r}
+#Nitrogen analysis
+#Standard Values
+Nitrogen_Std <- c(1, 0.5, 0.25, 0)
+
+#Standard Slope and intercept
+Slope <- summary(lm(Nitrogen_data$Fluorescence[1:4] ~ Nitrogen_Std))$coefficients[[2]]
+Intercept <- summary(lm(Nitrogen_data$Fluorescence[1:4] ~ Nitrogen_Std))$coefficients[[1]]
+
+#plot(Nitrogen_Std, Nitrogen_data$Fluorescence[1:4])
+#abline(b = Slope, a = Intercept)
+
+Nitrogen_data <- Nitrogen_data[c(5:49),] %>%
+  separate(Condition, into = c("TimePoint", "Media", "Replicate", "Dilution"), sep = "_")
+
+Time_Hours <- c(rep(c(-2.5, 17, 35, 44, 59.5, 75.5),3), rep(c(0,15,45,75),6))
+
+Blank <- Nitrogen_data$Fluorescence[4]
+Time_Post <- c(rep(5,10), rep(15, 6), rep(30, 6))
+
+Nitrogen_Concentration <- Nitrogen_data %>%
+  mutate(Norm_Fluo_mM = ( Fluorescence - Blank ) / Slope) %>%
+    mutate(Times_Diln = (Norm_Fluo_mM * as.numeric(Dilution))) %>%
+      mutate(Norm_Fluo_Diln_uM = Times_Diln*500) %>%
+        filter(TimePoint != "T9")
+
+ggplot(Nitrogen_Concentration, aes(y = Times_Diln, x = Time_Hours, color = Media)) +
+  geom_rect(aes(xmin = 0, xmax = 30, ymin = -Inf, ymax = Inf), fill = "pink", alpha = 0.01,linetype=0) +
+  geom_rect(aes(xmin = 60, xmax = 75, ymin = -Inf, ymax = Inf), fill = "pink", alpha = 0.01,linetype=0) +
+  geom_rect(aes(xmin = -2, xmax = 0, ymin = -Inf, ymax = Inf), fill = "steelblue1", alpha = 0.01,linetype=0) +
+  geom_rect(aes(xmin = 30, xmax = 60, ymin = -Inf, ymax = Inf), fill = "steelblue1", alpha = 0.01,linetype=0) +
+  #scale_color_manual(values = c("lightcoral", "slateblue2", "darkorchid4")) +
+  scale_color_manual(values = c(Clim_col, Nlim_col, Switch_col)) +
+  geom_point(aes(shape = Replicate)) +
+  geom_smooth() +
+  xlim(-2.5, 75) +
+  ylab("Ammonium Concentration (mM)") +
+  xlab("Time (Hours)") +
+#  geom_line(lwd = 1.5) +
+#  geom_vline(xintercept=c(30,60), lty = 4) +
+  scale_x_continuous(breaks=c(0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+#Carbon analysis
+Carbon_data <- Carbon_data %>% 
+  mutate(Blanked = Step2 - Step1) %>%
+   mutate(Normalized = Blanked * 0.8636)
+
+#Check that blank is 0.5 g/L and if not obtain normalization factor to multiply samples and standards by it
+Carbon_Std <- Carbon_data %>%
+  filter(Sample == "KitControl")
+
+Cntrl_Factor <- as.matrix(0.5/Carbon_Std[1,7])
+
+Carbon_data <- Carbon_data %>%
+  mutate(ControlNorm = as.vector(Normalized) * as.vector(Cntrl_Factor))
+
+Standards <- Carbon_data %>%
+  filter(grepl("Standard", Sample))
+
+#Visualize standards. Standard curves are proportional with the exception of 2 samples which will be excluded from the analysis. Since the values for these two samples are negative, they don't even appear on the graph below where the limits are starting at 0.
+ggplot(Standards, aes(x = Expected, y = ControlNorm, color = as.character(Replicate))) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ylim(-1,1) +
+  xlim(0,1) +
+  ylab("Observed Carbon Concentration (g/L)") +
+  xlab("Expected Carbon Concentration (g/L)")
+
+#Obtain slope from standards
+Slope <- coef(lm(ControlNorm ~ Expected, data = Standards))[2]
+
+#Process samples
+Carbon_concentration <- Carbon_data %>%
+  mutate(Std_Norm = ControlNorm * Slope) %>%
+    mutate(Final_Concentration = Std_Norm * DilnFactor) %>%
+      filter(!grepl("Standard|Blank|Control|EMPTY",Sample)) %>%
+        mutate(Molarity = (Final_Concentration/180.16)*1000000) #uM
+
+#ggplot(Carbon_concentration, aes(x = TimePoint, y = Std_Norm, color = Sample)) +
+#  geom_point() +
+  #geom_smooth(method = "lm") +
+  #ylim(0,1) +
+  #xlim(0,1) +
+  #ylab("Observed Carbon Concentration (g/L)") +
+  #xlab("TimePoint")
+
+ggplot(Carbon_concentration, aes(x = TimeHrs, y = Final_Concentration, color = Sample)) +
+  geom_point() +
+  #geom_smooth(method = "lm") +
+  #ylim(0,1) +
+  #xlim(0,1) +
+  ylab("Observed Carbon Concentration (g/L)") +
+  xlab("Time (Hrs)") +
+  geom_rect(aes(xmin = 0, xmax = 30, ymin = -Inf, ymax = Inf), fill = "pink", alpha = 0.01,linetype=0) +
+  geom_rect(aes(xmin = 60, xmax = 90, ymin = -Inf, ymax = Inf), fill = "pink", alpha = 0.01,linetype=0) +
+  geom_rect(aes(xmin = -2, xmax = 0, ymin = -Inf, ymax = Inf), fill = "steelblue1", alpha = 0.01,linetype=0) +
+  geom_rect(aes(xmin = 30, xmax = 60, ymin = -Inf, ymax = Inf), fill = "steelblue1", alpha = 0.01,linetype=0) +
+  #scale_color_manual(values = c("lightcoral", "slateblue2", "darkorchid4")) +
+  scale_color_manual(values = c(Clim_col, Nlim_col, Switch_col)) +
+  geom_point(aes(shape = as.character(Replicate))) +
+  geom_smooth()
+
+
+```
+
+
+Model with no cellular consumption
+```{r fig1, fig.height = 15, fig.width = 15}
+#Set parameters
+parms <- c(
+  t <- seq(from = 0, to = 271, by = 1), #hrs
+  Ks_AS <- 51.5, #51.5 uM, saturation constant, substrate concentration at which u = 1/2 u_max,
+  Ks_G <- 500.5, # uM, saturation constant, substrate concentration at which u = 1/2 u_max,
+  Y_AS <- 42500, # cells/mL/uM, 37500 yield constant. The culture yield per mole of the limiting nutrient  
+  Y_G <- 13511.6876, # cells/mL/uM, *13511.6876 I'm gonna play with this number and say 6E7cells/mL/4440.6uM Molarity of glucose not carbon
+  ss_lag <- -30, # hrs, This is the time the culture was grown in steady state before starting the flucs
+  u_max <- 0.35 , # growth/hour, 0.35,  0.005833333 growth/min
+  D <- 0.12, # hr-1, At 0.12hr-1 would be 24 mL/hour
+  R_s <- 800, # uM, AS concentration in carboy of AS-limiting media
+  R_g <- 111014.9, # uM, glucose concentration in carboy of AS-limiting media 
+  static_xini <- c(s_AS = R_s, s_G = R_g, X = 0, Growth_Rate = 0) #Initial values AS, glucose concentrations in carboys, and cell density.
+)
+
+#Create the function with the system of equations
+Sys_func <- function(times, Total, parms) {
+  with(as.list(Total, parms), {
+  
+    #This is the system of equations used to model AS, glucose, and cell density. A modified form of the Michaelis-Mentin equation is used here, to take into consideration two nutrients instead of just one.
+      deriv_S <- -s_AS*D + R_s*D - (X/Y_AS) * u_max * 1/(1+(Ks_AS/s_AS)+(Ks_G/s_G))
+      
+      deriv_G <- -s_G*D + R_g*D - (X/Y_G) * u_max * 1/(1+(Ks_AS/s_AS)+(Ks_G/s_G))
+      
+      Growth_Rate <- u_max *  1/(1+(Ks_AS/s_AS) + (Ks_G/s_G))
+      
+      deriv_X   <-  Growth_Rate * X - D * X 
+    
+    return(list(c(deriv_S, deriv_G, deriv_X, Growth_Rate)))
+  
+  })
+}
+
+#Solving the system of equations.
+out_stat_nlim <- ode(y = static_xini, times = t, func = Sys_func, parms=parms)
+colnames(out_stat_nlim)<-c("Time (hrs)","Ammonium-Sulfate Concentration (uM)","Glucose Concentration (uM)","Cell Density (cells/mL)","Growth Rate (hr-1)")
+
+#Make change in growth rate function
+hist <- function(history_out) {
+  history <- list(1:dim(history_out)[1])
+  
+for (i in 1:271) {
+  diff <-history_out[c(i+1),5] - history_out[c(i),5]
+  history[i] <- diff #Growth rate hr-1
+}
+  return(history)  
+}
+
+#Calculate change in growth rate
+history_stat_nlim <- hist(out_stat_nlim)
+
+out_stat_nlim <- as.data.frame(cbind(out_stat_nlim[1:271,c(1:4)],unlist(history_stat_nlim)))
+out_stat_nlim$Condition <- "Nlim"
+colnames(out_stat_nlim)[5] <- "Growth Rate (hr-1)" 
+
+#Plotting results
+Tidy_Stat_Nlim <- gather(as.data.frame(out_stat_nlim), key = Variable, value = Value, -`Time (hrs)`, -Condition)
+
+#Here, I have tried logging the data but the nummbers were very unintuitive and the trend looked almost exactly the same, so it did not seem useful to do this.
+#ggplot(Tidy_Stat_Nlim, aes(x= ss_lag + `Time (hrs)`, y=Value, color=Variable)) + 
+#  scale_color_manual(values=c("darkblue", "black","darkred","orange")) +
+#  xlab("Time (hours)") +
+#  scale_x_continuous(labels = ss_lag + seq(0, 270, 30), breaks = ss_lag + seq(0, 270, 30), expand = c(0, 0)) +
+#  facet_wrap(~Variable, ncol=1, scales="free") +
+#  geom_vline(xintercept=(c(30,60,90,120,150,180,210,240)), linetype='dashed') +
+#  geom_line(size=1.5) +
+#  theme(axis.text=element_text(size=16),
+#        axis.title.y=element_blank(),
+#        axis.title.x=element_text(size=20,face="bold"),
+#        legend.text=element_text(size=16),
+#        legend.title=element_text(size=20,face="bold"),
+#        panel.grid = element_blank(),
+#        panel.border = element_blank(),
+#        panel.background = element_rect(fill = "white",
+#                                        colour = "black",
+#                                        size = 0.75, linetype = "solid"),
+#        panel.grid.major = element_line(size = 0.25, linetype = 'blank',
+#                                        colour = "gray"), 
+#        panel.grid.minor = element_line(size = 0.25, linetype = 'blank',
+#                                        colour = "gray"),
+#        strip.text = element_text(size = 20))
+
+#Static modelling for static Clim
+#Set parameters
+parms <- c(
+  t <- seq(from = 0, to = 271, by = 1), #hrs
+  Ks_AS <- 51.5, #51.5 uM, saturation constant, substrate concentration at which u = 1/2 u_max,
+  Ks_G <- 500.5, # uM, saturation constant, substrate concentration at which u = 1/2 u_max,
+  Y_AS <- 42500, # cells/mL/uM, 37500 yield constant. The culture yield per mole of the limiting nutrient  
+  Y_G <- 13511.6876, # cells/mL/uM, *13511.6876 I'm gonna play with this number and say 6E7cells/mL/4440.6uM Molarity of glucose not carbon
+  ss_lag <- -30, # hrs, This is the time the culture was grown in steady state before starting the flucs
+  u_max <- 0.35 , # growth/hour, 0.35,  0.005833333 growth/min
+  D <- 0.12, # hr-1, At 0.12hr-1 would be 24 mL/hour
+  R_s <- 37838.7, # uM, AS concentration in carboy of glu-limiting media
+  R_g <- 4440.6, # uM, glucose concentration in carboy of glu-limiting media 
+  static_xini <- c(s_AS = R_s, s_G = R_g, X = 0, Growth_Rate = 0) #Initial values AS, glucose concentrations in carboys, and cell density.
+)
+
+#Create the function with the system of equations
+Sys_func <- function(times, Total, parms) {
+  with(as.list(Total, parms), {
+  
+    #This is the system of equations used to model AS, glucose, and cell density. A modified form of the Michaelis-Mentin equation is used here, to take into consideration two nutrients instead of just one.
+      deriv_S <- -s_AS*D + R_s*D - (X/Y_AS) * u_max * 1/(1+(Ks_AS/s_AS)+(Ks_G/s_G))
+      
+      deriv_G <- -s_G*D + R_g*D - (X/Y_G) * u_max * 1/(1+(Ks_AS/s_AS)+(Ks_G/s_G))
+      
+      Growth_Rate <- u_max *  1/(1+(Ks_AS/s_AS) + (Ks_G/s_G))
+      
+      deriv_X   <-  Growth_Rate * X - D * X 
+    
+    return(list(c(deriv_S, deriv_G, deriv_X, Growth_Rate)))
+  
+  })
+}
+
+#Solving the system of equations.
+out_stat_clim <- ode(y = static_xini, times = t, func = Sys_func, parms=parms)
+colnames(out_stat_clim)<-c("Time (hrs)","Ammonium-Sulfate Concentration (uM)","Glucose Concentration (uM)","Cell Density (cells/mL)","Growth Rate (hr-1)")
+
+#Calculate change in growth rate
+history_stat_clim <- hist(out_stat_clim)
+
+out_stat_new_clim <-as.data.frame(cbind(out_stat_clim[1:271,c(1:4)],unlist(history_stat_clim)))
+out_stat_new_clim$Condition <- "Clim"
+colnames(out_stat_new_clim)[5] <- "Growth Rate (hr-1)" 
+
+#Plotting results
+Tidy_Stat_Clim <- gather(as.data.frame(out_stat_new_clim), key = Variable, value = Value, -`Time (hrs)`, -Condition)
+
+#ggplot(Tidy_Stat_Clim, aes(x= ss_lag + `Time (hrs)`, y=Value, color=Variable)) +  #Here, I have tried logging the data but the nummbers were very unintuitive and the trend looked almost exactly the same, so it did not seem useful to do this.
+#  scale_color_manual(values=c("darkblue", "black","darkred","orange")) +
+#  xlab("Time (hours)") +
+#  scale_x_continuous(labels = ss_lag + seq(0, 270, 30), breaks = ss_lag + seq(0, 270, 30), expand = c(0, 0)) +
+#  facet_wrap(~Variable, ncol=1, scales="free") +
+#  geom_vline(xintercept=(c(30,60,90,120,150,180,210,240)), linetype='dashed') +
+#  geom_line(size=1.5) +
+#  theme(axis.text=element_text(size=16),
+#        axis.title.y=element_blank(),
+#        axis.title.x=element_text(size=20,face="bold"),
+#        legend.text=element_text(size=16),
+#        legend.title=element_text(size=20,face="bold"),
+#        panel.grid = element_blank(),
+#        panel.border = element_blank(),
+#        panel.background = element_rect(fill = "white",
+#                                        colour = "black",
+#                                        size = 0.75, linetype = "solid"),
+#        panel.grid.major = element_line(size = 0.25, linetype = 'blank',
+#                                        colour = "gray"), 
+#        panel.grid.minor = element_line(size = 0.25, linetype = 'blank',
+#                                        colour = "gray"),
+#        strip.text = element_text(size = 20))
+
+#Switch conditions
+
+parms <- c(
+  t <- seq(from = 0, to = 271, by = 1), #hrs
+  Ks_AS <- 51.5, #51.5 uM, saturation constant, substrate concentration at which u = 1/2 u_max,
+  Ks_G <- 51.5, # uM, saturation constant, substrate concentration at which u = 1/2 u_max,
+  Y_AS <- 42500, # cells/mL/uM, 37500 yield constant. The culture yield per mole of the limiting nutrient  
+  #Y_AS <- 13511.6876,
+  Y_G <- 13511.6876, # cells/mL/uM, *13511.6876 I'm gonna play with this number and say 6E7cells/mL/4440.6uM Molarity of glucose not carbon
+  ss_lag <- -30, # hrs, This is the time the culture was grown in steady state before starting the flucs
+  u_max <- 0.35 , # growth/hour, 0.35,  0.005833333 growth/min
+  D <- 0.12, # hr-1, At 0.12hr-1 would be 24 mL/hour
+  R_ASL_AS <- 800, # uM, AS concentration in carboy of AS-limiting media
+  R_GL_AS <- 37838.7, # uM, AS concentration in carboy of glucose-limiting media
+  R_ASL_G <- 111014.9, # uM, glucose concentration in carboy of AS-limiting media 
+  R_GL_G <- 4440.6, # uM, glucose concentration in carboy of glucose-limiting media
+  AS_GL_xini <- c(s_AS = R_GL_AS, s_G = R_GL_G, X = 0, Growth_Rate = 0) #Initial values AS, glucose concentrations in carboys, and cell density.
+)
+
+#Create the function with the system of equations
+Sys_func <- function(times, Total, parms) {
+  with(as.list(Total, parms), {
+    
+    #The modulus form was used to enable periodic oscillations between glucose-limiting and AS-limiting media every 30 hours.
+        if (times > 30 & times %% 60 <= 30)
+      { 
+      R_s = R_GL_AS
+      R_g = R_GL_G
+    }else{
+      R_s = R_ASL_AS
+      R_g = R_ASL_G
+      
+      
+    }
+
+    #This is the system of equations used to model AS, glucose, and cell density. A modified form of the Michaelis-Mentin equation is used here, to take into consideration two nutrients instead of just one.
+      deriv_S <- -s_AS*D + R_s*D - (X/Y_AS) * u_max * 1/(1+(Ks_AS/s_AS)+(Ks_G/s_G))
+      
+      deriv_G <- -s_G*D + R_g*D - (X/Y_G) * u_max * 1/(1+(Ks_AS/s_AS)+(Ks_G/s_G))
+      
+      Growth_Rate <- u_max *  1/(1+(Ks_AS/s_AS) + (Ks_G/s_G))
+      
+      deriv_X   <-  Growth_Rate * X - D * X 
+    
+    return(list(c(deriv_S, deriv_G, deriv_X, Growth_Rate)))
+  
+  })
+}
+
+#Solving the system of equations.
+out_switch <- ode(y = AS_GL_xini, times = t, func = Sys_func, parms=parms)
+colnames(out_switch)<-c("Time (hrs)","Ammonium-Sulfate Concentration (uM)","Glucose Concentration (uM)","Cell Density (cells/mL)","Growth Rate (hr-1)")
+
+#Make change in growth rate function
+hist <- function(history_out) {
+  history <- list(1:dim(history_out)[1])
+  
+for (i in 1:270) {
+  diff <-history_out[c(i+1),5] - history_out[c(i),5]
+  history[i] <- diff #Growth rate hr-1
+}
+  return(history)  
+}
+
+#Get growth rate...
+history_switch <- hist(out_switch)
+history <- list(1:dim(out_switch)[1])
+
+#doubling_history <- log(2)/unlist(history)
+
+out_switch_new <- as.data.frame(cbind(out_switch[1:271,c(1:4)],c(0,unlist(history_switch))))
+out_switch_new$Condition <- "Switch"
+colnames(out_switch_new)[5] <- "Growth Rate (hr-1)"
+
+#Plotting results
+Tidy_Switch <- gather(as.data.frame(out_switch_new), key = Variable, value = Value, -`Time (hrs)`, -Condition)
+
+#ggplot(Tidy_Switch, aes(x= ss_lag + `Time (hrs)`, y=Value, color=Variable)) +  #Here, I have tried logging the data but the nummbers were very unintuitive and the trend looked almost exactly the same, so it did not seem useful to do this.
+#  scale_color_manual(values=c("darkblue", "black","darkred","orange")) +
+#  xlab("Time (hours)") +
+#  scale_x_continuous(labels = ss_lag + seq(0, 270, 30), breaks = ss_lag + seq(0, 270, 30), expand = c(0, 0)) +
+#  facet_wrap(~Variable, ncol=1, scales="free") +
+#  geom_vline(xintercept=(c(30,60,90,120,150,180,210,240)), linetype='dashed') +
+#  geom_line(size=1.5) +
+#  theme(axis.text=element_text(size=16),
+#        axis.title.y=element_blank(),
+#        axis.title.x=element_text(size=20,face="bold"),
+#        legend.text=element_text(size=16),
+#        legend.title=element_text(size=20,face="bold"),
+#        panel.grid = element_blank(),
+#        panel.border = element_blank(),
+#        panel.background = element_rect(fill = "white",
+#                                        colour = "black",
+#                                        size = 0.75, linetype = "solid"),
+#        panel.grid.major = element_line(size = 0.25, linetype = 'blank',
+#                                        colour = "gray"), 
+#        panel.grid.minor = element_line(size = 0.25, linetype = 'blank',
+#                                        colour = "gray"),
+#        strip.text = element_text(size = 20))
+
+#Combine this data and add a "No Consumption" tag
+
+#NoConsumption <- rbind(Tidy_Switch, Tidy_Stat_Nlim, Tidy_Stat_glu)
+#NoConsumption$CellConsumption <- "No Consumption"
+#NoConsumption$Replicate <- "NA"
+#This is currently from a different script to combine empirical data with the model
+
+#Combined_Metabolites <- gather(Combined_Metabolites, Variable, Value, -Condition, -Replicate, -`Time (hrs)`)
+#Combined_Metabolites$CellConsumption <- "Empirical"
+#Combined_Metabolites <- Combined_Metabolites[,c(3,1,4,5,6,2)]
+
+# NoConsumption_SpecialTime <- NoConsumption %>%
+#  mutate(`Time (hrs)` = `Time (hrs)` - 60)
+ 
+
+#Empirical_NoCons <- rbind(NoConsumption_SpecialTime,Combined_Metabolites)
+
+#Empirical_NoCons_Spread <- spread(Empirical_NoCons, Variable,  Value)
+
+#Plot both empirical and model data.
+```
+
+#This chunk is for importing and analyzing the glucose and nitrogen empirical data
+```{r}
+#Cell denisty data
+ggplot(Cell_data, aes(x = Hour, y = Cell_Density, color = Condition)) +
+  geom_rect(aes(xmin = 0, xmax = 30, ymin = -Inf, ymax = Inf), fill = "pink", alpha = 0.01,linetype=0) +
+  geom_rect(aes(xmin = 60, xmax = 90, ymin = -Inf, ymax = Inf), fill = "pink", alpha = 0.01,linetype=0) +
+  geom_rect(aes(xmin = -2, xmax = 0, ymin = -Inf, ymax = Inf), fill = "steelblue1", alpha = 0.01,linetype=0) +
+  geom_rect(aes(xmin = 30, xmax = 60, ymin = -Inf, ymax = Inf), fill = "steelblue1", alpha = 0.01,linetype=0) +
+  scale_color_manual(values = c("black", "darkgray", "white")) +
+  geom_point(aes(shape = Replicate)) +
+#  geom_line() +
+#  stat_smooth(method = "mean") +
+  stat_summary(aes(y = Cell_Density, group = Condition), fun.y=mean, geom = "line") +
+  geom_vline(xintercept=c(30,60,90), lty = 4) +
+  scale_x_continuous(breaks=c(0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90)) +
+ theme_bw()
+
+#Combine empirical and model data
+
+# Make a dataframe of both carbon and nitrogen concentrations + metadata.
+#Nitrogen_Combine <- Nitrogen_Concentration[,c(2,3,8)]
+Nitrogen_Time <- c(rep(Carbon_concentration$TimeHrs[1:6],3),rep(Carbon_concentration$TimeHrs[c(1,2,4,6)],6))
+Nitrogen_df <- cbind(Nitrogen_Concentration[,c(2,3,8)],Nitrogen_Time,rep("Ammonium-Sulfate Concentration (uM)",42))
+
+colnames(Nitrogen_df)[c(1,3,4,5)] <- c("Condition","Concentration","Time (hrs)","Variable")
+
+#Carbon_Combine <- Carbon_concentration[,c(2,3,15,5)]
+Carbon_df <- cbind(Carbon_concentration[,c(2,3,15,5)], rep("Glucose Concentration (uM)",63))
+colnames(Carbon_df)[c(1,3,4,5)] <- c("Condition","Concentration","Time (hrs)","Variable")
+
+NC_df <- rbind(Nitrogen_df, Carbon_df) %>%
+           spread(Variable, Concentration) %>%
+             gather(Variable, Value, -Condition, -Replicate, -`Time (hrs)`)
+
+NC_df$CellConsumption <- "Empirical"
+NC_df <- NC_df[,c(3,1,4,5,6,2)]
+#NC_df$Condition <- sub("Carbon", "Static Glucose", NC_df$Condition)
+#NC_df$Condition <- sub("Nitrogen", "Static Nlim", NC_df$Condition)
+
+##### Making full dataframe of empirical and modelled observations
+NoConsumption_Model <- rbind(Tidy_Switch, Tidy_Stat_Nlim, Tidy_Stat_Clim)  %>%
+                         mutate(`Time (hrs)` = `Time (hrs)` - 60)
+NoConsumption_Model$CellConsumption <- "No Consumption"
+NoConsumption_Model$Replicate <- "NA"
+
+#NC_df <- gather(NC_df, Variable, Value, -Condition, -Replicate, -`Time (hrs)`)
+#NC_df <- NC_df[,c(2,6,3,4,5,1)]
+
+#NoConsumption_SpecialTime <- NoConsumption %>%
+#  mutate(`Time (hrs)` = `Time (hrs)` - 60)
+ 
+Emp_Mod_df <- rbind(NoConsumption_Model, NC_df) %>%
+                spread(Variable, Value)
+  
+Emp_Mod_df$Condition <- sub("Carbon", "Clim", Emp_Mod_df$Condition)
+Emp_Mod_df$Condition <- sub("Nitrogen", "Nlim", Emp_Mod_df$Condition)
+
+#Empirical_NoCons_Spread <- spread(Empirical_NoCons, Variable, Value)
+
+```
+
+Modelling no consumption plot
+```{r}
+
+p1 <- ggplot(Emp_Mod_df, aes(x=`Time (hrs)`, y=`Ammonium-Sulfate Concentration (uM)`, lty= CellConsumption)) +
+
+    geom_rect(data = filter(Emp_Mod_df, Condition == "Clim"), aes(xmin = -5, xmax = 80, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +  
+  
+    geom_rect(data = filter(Emp_Mod_df, Condition == "Nlim"), aes(xmin = -5, xmax = 80, ymin = -Inf, ymax = Inf), fill = Nlim_col, alpha = 0.01,linetype=0) + 
+   
+    geom_rect(data = filter(Emp_Mod_df, Condition == "Switch"), aes(xmin = 0, xmax = 30, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+  
+    geom_rect(data = filter(Emp_Mod_df, Condition == "Switch"),aes(xmin = 30, xmax = 60, ymin = -Inf, ymax = Inf), fill = Nlim_col ,linetype=0) +
+  
+    geom_rect(data = filter(Emp_Mod_df, Condition == "Switch"),aes(xmin = 60, xmax = 80, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+  
+  geom_rect(data = filter(Emp_Mod_df, Condition == "Switch"),aes(xmin = -5, xmax = 0, ymin = -Inf, ymax = Inf), fill = Nlim_col, linetype=0) +
+  
+  xlab("Time (hours)") +
+  
+#  geom_line(data = filter(Emp_Mod_df, CellConsumption == "No Consumption"), aes( y = `Ammonium-Sulfate Concentration (uM)`, color = "Nitrogen Concentration"), lwd = 1, color = "blue", lty = "dashed") +
+ 
+  geom_line(data = filter(Emp_Mod_df, CellConsumption == "No Consumption"),aes(`Time (hrs)`,`Ammonium-Sulfate Concentration (uM)`), color = "black", fill = "black", lty = "dashed", lwd = 1) +
+
+  geom_line(data = filter(Emp_Mod_df, CellConsumption == "No Consumption"), aes(`Time (hrs)`,`Glucose Concentration (uM)`/2.95), color = "white",  fill = "white", lty = "dashed", lwd = 1) +
+ 
+#  geom_line(data = filter(Emp_Mod_df, CellConsumption == "No Consumption"), aes(`Time (hrs)`,`Glucose Concentration (uM)`/3), color = "red", lwd = 1, lty = "dashed") +
+
+#  scale_x_continuous(labels = seq(0, 270, 30), breaks = seq(0, 270, 30), expand = c(0, 0)) +
+  
+  scale_y_continuous(sec.axis = sec_axis(~.*2.95, name = "Glucose Concentration (uM)")) +
+  
+  scale_color_manual(values=c("white", "black")) +
+  
+  ylab("Ammonium-Sulfate Concentration (uM)") +
+  
+  xlab("Time (Hrs)") +
+  
+  facet_wrap(~Condition, ncol = 3) +
+  
+  scale_x_continuous(limits = c(-5, 80), expand = c(0, 0)) +
+#  ylim(-1000,40000) +  
+  
+  theme_classic()
+
+pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure1/Figure1B", width=14, height=4)
+
+p1
+
+dev.off()  
+
+
+```
+
+
+Empirical data with cellular consumption plot
+```{r}
+
+p2 <- ggplot(Emp_Mod_df, aes(x=`Time (hrs)`, y=`Ammonium-Sulfate Concentration (uM)`, lty= CellConsumption)) +
+
+    geom_rect(data = filter(Emp_Mod_df, Condition == "Clim"), aes(xmin = -5, xmax = 80, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +  
+  
+    geom_rect(data = filter(Emp_Mod_df, Condition == "Nlim"), aes(xmin = -5, xmax = 80, ymin = -Inf, ymax = Inf), fill = Nlim_col, alpha = 0.01,linetype=0) + 
+   
+    geom_rect(data = filter(Emp_Mod_df, Condition == "Switch"), aes(xmin = 0, xmax = 30, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+  
+    geom_rect(data = filter(Emp_Mod_df, Condition == "Switch"),aes(xmin = 30, xmax = 60, ymin = -Inf, ymax = Inf), fill = Nlim_col ,linetype=0) +
+  
+    geom_rect(data = filter(Emp_Mod_df, Condition == "Switch"),aes(xmin = 60, xmax = 80, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+  
+  geom_rect(data = filter(Emp_Mod_df, Condition == "Switch"),aes(xmin = -5, xmax = 0, ymin = -Inf, ymax = Inf), fill = Nlim_col, linetype=0) +
+  
+  xlab("Time (hours)") +
+  
+#  geom_line(data = filter(Emp_Mod_df, CellConsumption == "No Consumption"), aes( y = `Ammonium-Sulfate Concentration (uM)`, color = "Nitrogen Concentration"), lwd = 1, color = "blue", lty = "dashed") +
+ 
+  geom_smooth(data = filter(Emp_Mod_df, CellConsumption == "Empirical"),aes(`Time (hrs)`,`Ammonium-Sulfate Concentration (uM)`), color = "black", method = "loess", fill = "black") +
+  
+  geom_point(data = filter(Emp_Mod_df, CellConsumption == "Empirical"), aes( y = `Ammonium-Sulfate Concentration (uM)`, color = "Nitrogen Concentration")) +  
+   
+  geom_smooth(data = filter(Emp_Mod_df, CellConsumption == "Empirical"), aes(`Time (hrs)`,`Glucose Concentration (uM)`/2.3), color = "white", method="loess", fill = "white") +
+ 
+  geom_point(data = filter(Emp_Mod_df, CellConsumption == "Empirical"), aes(y =`Glucose Concentration (uM)`/2.3, color = "Glucose Concentration"),size=1) +
+   
+#  geom_line(data = filter(Emp_Mod_df, CellConsumption == "No Consumption"), aes(`Time (hrs)`,`Glucose Concentration (uM)`/3), color = "red", lwd = 1, lty = "dashed") +
+
+#  scale_x_continuous(labels = seq(0, 270, 30), breaks = seq(0, 270, 30), expand = c(0, 0)) +
+  
+  scale_y_continuous(sec.axis = sec_axis(~.*2.3, name = "Glucose Concentration (uM)")) +
+  
+  scale_color_manual(values=c("white", "black")) +
+  
+  ylab("Ammonium-Sulfate Concentration (uM)") +
+  
+  xlab("Time (Hrs)") +
+  
+  facet_wrap(~Condition, ncol=3) +
+  
+#  geom_vline(xintercept=(c(30,60)), linetype='dashed') +
+  scale_x_continuous(limits = c(-5, 80), expand = c(0, 0)) +
+#  ylim(-1000,40000) +  
+  theme_classic()
+
+pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure1/Figure1C", width=14, height=4)
+
+p2
+
+dev.off()  
+
+```
+
+

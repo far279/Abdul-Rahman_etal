@@ -1,0 +1,1129 @@
+---
+title: "Farah BarSeq Data Analysis"
+output:
+  pdf_document:
+  fontsize: 12pt
+  html_document:
+    df_print: paged
+header-includes: \usepackage{comment} \usepackage{array,amsmath} \newcommand\eqbydef{\buildrel{\rm
+  def}\over=}
+---
+
+Chunk 1: Import packages and set theme.
+Chunk 2:
+
+Install pacakges and run library commands
+```{r, include=FALSE}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#install.packages("tidyverse")
+
+#The following is necessary fo DESeq2:
+#install.packages("vctrs")
+#library(vctrs)
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#BiocManager::install("DESeq2")
+library(DESeq2)
+library(tidyverse)
+
+#Set theme and colors for the entire document
+theme_set(theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.text=element_text(size=12), axis.title=element_text(size=14), legend.text=element_text(size=12), legend.title=element_text(size=14)))
+
+Clim_col <- "firebrick1"
+Nlim_col <- "royalblue2"
+Switch_col <- "purple3"
+PulseAS_col <- "darkgreen"
+PulseGln_col <- "pink"
+
+
+#Farah's directory
+data.directory<-("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/data")
+
+#Why set the directory?
+setwd("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure3")
+
+data <- read_tsv(paste0(data.directory,"/ReplicateFilteredData.txt"))
+full_ynorm <- read_tsv(paste0(data.directory,"/full_ynorm.txt"))
+full_model_conditions <- read_tsv(paste0(data.directory,"/full_model_conditions.txt")) 
+full_coefs_conditions <- read_tsv(paste0(data.directory,"/full_coefs_conditions.txt"))
+
+```
+
+Create dataframe with data for coefs and data points
+```{r}
+#merge coefs table with normalized table with metadata and use formula below in mutate
+full_ynorm_gathered  <- full_ynorm %>%
+    gather(key = Strain, value = Ynorm, -TimePoint, -Condition, -Replicate, -Data)
+  
+joined_coef_ynorm  <- left_join(full_ynorm_gathered, full_coefs_conditions, by = c("Strain","Condition", "Data"))  %>%
+  filter(Data=="Full")
+
+#Make the whole dataframe including observed and predicted values  
+joined_coef_ynorm_pred <- joined_coef_ynorm %>%
+    mutate(Replicate_2_vs_1=replace(Replicate_2_vs_1, Replicate==1, 0)) %>%
+      mutate(Replicate_3_vs_1=replace(Replicate_3_vs_1, Replicate==1, 0)) %>%
+        mutate(Replicate_2_vs_1=replace(Replicate_2_vs_1, Replicate==3, 0)) %>%
+          mutate(Replicate_3_vs_1=replace(Replicate_3_vs_1, Replicate==2, 0)) %>%
+            mutate(predicted = `Replicate_2_vs_1`+`Replicate_3_vs_1`+`Intercept`+`I.TimePoint.`*TimePoint+`I.TimePoint.2.`*TimePoint^2+`I.TimePoint.3.`*TimePoint^3+`Sin`*sin(2*pi*f*TimePoint)+`Cos`*cos(2*pi*f*TimePoint),
+                   theta = atan(Cos/Sin)) %>%
+                      mutate(Replicate = as.factor(Replicate))
+ 
+#Make dataframe with predicted values for many timepoint
+t.sim<-seq(from=0,to=240, length.out=100) #use this one for making plots with continuous lines for models
+
+#change here for smaller df
+#t.sim<-seq(from=0,to=240, by=24)
+
+t.sim.distinct<-distinct(dplyr::select(joined_coef_ynorm_pred, -TimePoint, -predicted, -theta, -baseMean, -log2FoldChange, -lfcSE, -pvalue, -padj, -stat, -Ynorm)) #I temporarily removed Ynorm, I may need to re-add this to generate the downstream plots
+
+t.sim.df <- cbind(t.sim.distinct, as.data.frame(matrix(t.sim, nrow=1)) %>%
+        dplyr::slice(rep(1:n(), each = dim(t.sim.distinct)[1])))
+
+t.sim.full.final <- t.sim.df %>%
+  gather(key = Key , value = Time.Sim, -Condition, -Replicate, -Strain,  -Intercept, -Replicate_2_vs_1, -Replicate_3_vs_1, -`I.TimePoint.`, -Sin, -Cos, -Model, -`I.TimePoint.2.`, -`I.TimePoint.3.`, -Data) %>% #I temporarily removed Ynorm, I may need to re-add this to generate the downstream plots
+  dplyr::select(-Key) %>%
+    mutate(predicted = `Replicate_2_vs_1`+`Replicate_3_vs_1`+`Intercept`+`I.TimePoint.`*Time.Sim+`I.TimePoint.2.`*Time.Sim^2+`I.TimePoint.3.`*Time.Sim^3+`Sin`*sin(2*pi*f*Time.Sim)+`Cos`*cos(2*pi*f*Time.Sim),
+           theta = atan(Cos/abs(Sin)),
+           theta2 = atan2(Cos, Sin),
+           sin_sign = sign(Sin),
+           cos_sign = sign(Cos))
+
+```
+
+Piece-wise measurements sing the simulation values
+This is figure 5, why is this in figure 3?
+```{r}
+t.sim_round <- round(t.sim[c(1, 11, 21, 31, 41, 51, 61, 71, 81, 90, 100)])
+
+PW_GR.sim <- t.sim.full.final %>%
+#  mutate(Time.Sim = round(Time.Sim)) %>%
+  filter(Data == "Full") %>%
+#  filter(Time.Sim == t.sim) %>%
+    group_by(Strain, Condition, Replicate) %>%
+      dplyr::select(Condition, Replicate, Strain, Time.Sim, predicted) %>% #I temporarily removed Ynorm, I may need to re-add this to generate the downstream plots
+      mutate(PW_GR = (predicted - lag(predicted))/(Time.Sim - lag(Time.Sim))) %>%
+        dplyr::select( -predicted) %>% #I temporarily removed Ynorm, I may need to re-add this to generate the downstream plots
+          drop_na %>%
+            distinct() %>%
+#              spread(Condition, Model) %>%
+#                mutate(Switch_Model = Switch) %>%
+#                  gather(Condition, Model, -Replicate, -Strain, -Switch_Model, -Time.Sim, -PW_GR)
+              spread(Condition, PW_GR) %>%
+                mutate(Avg_CN = (Clim+Nlim)/2)
+
+PW_GR.sim.model <- joined_coef_ynorm %>%
+  dplyr::select(Condition, Replicate, Strain, Model) %>%
+    filter(Condition == "Switch") %>%
+      mutate(Replicate = as.factor(Replicate)) %>%
+       right_join(PW_GR.sim, by = c("Replicate", "Strain")) %>%
+        distinct() %>%
+          filter(Replicate == 1)
+     
+write_tsv(PW_GR.sim.model, "/Users/farah/Google Drive/Abdul-Rahman et al Barseq/scripts/PW_GR.sim.txt")             
+
+# #These plots show the change in certain genotype location on the plot
+# STRAIN <- PW_GR.sim %>%
+# #            filter(Strain %in% c("YDR216W", "YGR001C", "YJL190C", "YGL175C", "YPR022C", "YOR188W"))
+#             filter(Strain %in% c("YKR039W", "YJL214W"))
+# 
+# 
+# STRAIN_pos <- PW_GR.sim.model %>%
+# #            filter(Strain %in% c("YDR216W", "YGR001C", "YJL190C", "YGL175C", "YPR022C", "YOR188W"))
+#             filter(Strain %in% c("YKR039W", "YJL214W","YDR216W", "YGR001C", "YJL190C", "YGL175C", "YPR022C", "YOR188W", "YOR049C"))
+# 
+# c("Glucose", "DNA Replication Stress", "NA", "NA", "Transporter", "Transporter", "")
+# 
+# STRAIN_neg <- PW_GR.sim.model %>%
+# #            filter(Strain %in% c("YDR216W", "YGR001C", "YJL190C", "YGL175C", "YPR022C", "YOR188W"))
+#             filter(Strain %in% c("YOL018C", "YPL174C","YLR360W", "YIL084C", "YGR217W"))
+# 
+# STRAIN_clim <- PW_GR.sim.model %>%
+# #            filter(Strain %in% c("YDR216W", "YGR001C", "YJL190C", "YGL175C", "YPR022C", "YOR188W"))
+#             filter(Strain %in% c("YDR277C", "YJL168C","YJL193W", "YNL229C", "	YOR350C"))
+# 
+# 
+# ggplot(PW_GR.sim.model, aes(x = Clim, y = Switch)) +
+#   geom_point(alpha = 0.5, color = "gray") +
+#   geom_point(data = STRAIN_pos, aes(x = Clim, y = Switch), color = c("blue")) +
+#   geom_point(data = STRAIN_neg, aes(x = Clim, y = Switch), color = c("red")) +
+#   geom_point(data = STRAIN_clim, aes(x = Clim, y = Switch), color = c("green")) +
+# #  scale_x_log10() +
+# #  scale_y_log10() +
+#   facet_wrap(~Time.Sim, ncol = 5) +
+#   ylab("Switch piece-wise fitness") +
+#   xlab("Clim piece-wise fitness") +
+#   geom_hline(yintercept = 0, lty = "dashed") +
+#   geom_vline(xintercept = 0, lty = "dashed") +
+#   geom_text_repel(
+#     data = STRAIN_pos,
+#     aes(label = Strain),
+#     size = 2,
+#     box.padding = unit(0.35, "lines"),
+#     point.padding = unit(0.3, "lines")) +
+#   geom_text_repel(
+#     data = STRAIN_neg,
+#     aes(label = Strain),
+#     size = 2,
+#     box.padding = unit(0.35, "lines"),
+#     point.padding = unit(0.3, "lines")) +
+#   geom_text_repel(
+#     data = STRAIN_clim,
+#     aes(label = Strain),
+#     size = 2,
+#     box.padding = unit(0.35, "lines"),
+#     point.padding = unit(0.3, "lines"))
+
+# PW_GR.sim.summ <- PW_GR.sim %>%
+#   gather(Condition, PW_GR, -Replicate, -Strain, -Time.Sim) %>%
+#     group_by(Condition, Replicate, Strain) %>%
+#       summarise(Mean_PW = mean(PW_GR))  %>%
+#         spread(Condition, Mean_PW) %>%
+#           mutate(pearson_CvsN = cor(Clim, Nlim, use="complete.obs", method = "pearson"),
+#                     pearson_CvsS = cor(Clim, Switch, use="complete.obs", method = "pearson"),
+#                     pearson_NvsS = cor(Nlim, Switch, use="complete.obs", method = "pearson"),
+#                     pearson_AvsS = cor(Avg_CN, Switch, use="complete.obs", method = "pearson"),
+#                     spearman_CvsN = cor(Clim, Nlim, use="complete.obs", method = "spearman"),
+#                     spearman_CvsS = cor(Clim, Switch, use="complete.obs", method = "spearman"),
+#                     spearman_NvsS = cor(Nlim, Switch, use="complete.obs", method = "spearman"),
+#                     spearman_AvsS = cor(Avg_CN, Switch, use="complete.obs", method = "spearman")
+#                     ) 
+#         
+# ggplot(PW_GR.sim.summ , aes(x = (Avg_CN), y = (Switch))) +
+#   geom_point() 
+
+
+#0, 24, 48, 72, 96, 120, 144, 168, 192, 216, 240
+```
+
+Test average growth rate between the first time point and each of the following time points
+-delete, this is in figure 5
+```{r}
+# All_averages_GR.sim.1 <- t.sim.full.final %>%
+# #  mutate(Time.Sim = round(Time.Sim)) %>%
+#   filter(Data == "Full") %>%
+# #  filter(Time.Sim == t.sim) %>%
+# #    group_by(Strain, Condition, Replicate) %>%
+#       dplyr::select(Condition, Replicate, Strain, Time.Sim, predicted) %>% #I temporarily removed Ynorm, I may need to re-add this to generate the downstream plots
+#         spread(Time.Sim, predicted) 
+# 
+# 
+# All_averages_GR.sim.2 <- All_averages_GR.sim.1 %>%
+#           mutate(avg_24 = ((`24` - `0`)/24),
+#                  avg_48 = ((`48` - `0`)/48),
+#                  avg_72 = ((`72` - `0`)/72),
+#                  avg_96 = ((`96` - `0`)/96),
+#                  avg_120 = ((`120` - `0`)/120),
+#                  avg_144 = ((`144` - `0`)/144),
+#                  avg_168 = ((`168` - `0`)/168),
+#                  avg_192 = ((`192` - `0`)/192),
+#                  avg_216 = ((`216` - `0`)/216),
+#                  avg_240 = ((`240` - `0`)/240)
+#                  ) %>%
+#                 as.data.frame() %>%
+#             dplyr::select(Condition, Replicate, Strain, avg_24, avg_48, avg_72, avg_96, avg_120, avg_144, avg_168, avg_192, avg_216, avg_240) %>%
+#           gather(Avg_TP, Avg_GR, -Condition, -Replicate, -Strain)  %>%
+# mutate(Avg_TP = fct_relevel(Avg_TP, c("avg_24", "avg_48", "avg_72", "avg_96", "avg_120", "avg_144", "avg_168", "avg_192", "avg_216", "avg_240")))
+#   
+# All_averages_GR.sim.3 <- All_averages_GR.sim.1 %>%
+#           mutate(full_avg_240 = ((`240` - `0`)/240)) %>%
+#             dplyr::select(Condition, Replicate, Strain, full_avg_240)
+#                     
+# All_averages_GR.sim.4 <- full_join(All_averages_GR.sim.2,All_averages_GR.sim.3, by = c("Condition", "Replicate", "Strain"))
+# 
+# PW_GR_df <- PW_GR.sim %>%
+#   gather(Condition, PW_GR, -Replicate, -Strain, -Time.Sim)
+#   
+# All_averages_GR.sim.5 <- full_join(All_averages_GR.sim.3, PW_GR_df, by = c("Condition", "Replicate", "Strain"))
+# 
+# 
+# ###### For corr  
+#             spread(Condition, Avg_GR) %>%
+#               mutate(Avg_CN = (Nlim+Clim)/2) %>%
+#               group_by(Avg_TP) %>%
+#                 mutate(pearson_CvsN = cor(Clim, Nlim, use="complete.obs", method = "pearson"),
+#                     pearson_CvsS = cor(Clim, Switch, use="complete.obs", method = "pearson"),
+#                     pearson_NvsS = cor(Nlim, Switch, use="complete.obs", method = "pearson"),
+#                     pearson_AvsS = cor(Avg_CN, Switch, use="complete.obs", method = "pearson"),
+#                     spearman_CvsN = cor(Clim, Nlim, use="complete.obs", method = "spearman"),
+#                     spearman_CvsS = cor(Clim, Switch, use="complete.obs", method = "spearman"),
+#                     spearman_NvsS = cor(Nlim, Switch, use="complete.obs", method = "spearman"),
+#                     spearman_AvsS = cor(Avg_CN, Switch, use="complete.obs", method = "spearman")) %>%
+#                       as.data.frame() %>%
+#                       mutate(Avg_TP = fct_relevel(Avg_TP, c("avg_24", "avg_48", "avg_72", "avg_96", "avg_120", "avg_144", "avg_168", "avg_192", "avg_216", "avg_240")))
+#   
+# ggplot(All_averages_GR.sim, aes(x = Avg_CN, y = Switch)) +
+#   geom_point(color = "gray", alpha = 0.5) +
+#   facet_wrap(~Avg_TP)
+# #  scale_x_log10() +
+# #  scale_y_log10()  
+# 
+# ggplot(All_averages_GR.sim, aes(x = Switch)) +
+#   geom_histogram(bins = 100) +
+# #  xlim(-0.1, 0.1) +
+#   #  scale_x_log10()
+#   facet_wrap(~Avg_TP, ncol = 10)
+
+# library( ggpubr)
+# 
+# ggplot(All_averages_GR.sim.4, aes(y = Avg_GR, x= full_avg_240, color = Condition)) +
+#   geom_point(alpha=0.05) +
+#  # scale_y_log10() +
+#   ylab("Average Relative Fitness") +
+#   xlab("Average Relative Fitness (t240-t0)/240") +
+#   stat_cor(aes(label = ..r.label..), method = "pearson", label.y = -0.2, color = "black") +
+#   facet_wrap(Condition~Avg_TP, ncol = 10) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+# ggplot(All_averages_GR.sim.4, aes(x = Avg_GR/full_avg_240, color = Condition)) +
+#   geom_histogram() +
+# #  scale_x_log10() +
+#   xlab("Average Relative Fitness") +
+#   facet_wrap(Condition~Avg_TP, ncol = 10) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# 
+# ggplot(filter(All_averages_GR.sim.5, Condition != "Avg_CN") , aes(y = PW_GR, x= full_avg_240, color = Condition)) +
+#   geom_point(alpha=0.05) +
+#  # scale_y_log10() +
+#   ylab("Average Relative Piece-Wise Fitness") +
+#   xlab("Average Relative Fitness (t240-t0)/240") +
+#   stat_cor(aes(label = ..r.label..), method = "pearson", label.y = -0.2, color = "black") +
+#   facet_wrap(Condition~Time.Sim, ncol = 10) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+# 
+# ggplot(filter(All_averages_GR.sim.5, Condition != "Avg_CN") , aes(x = PW_GR, color = Condition)) +
+#   geom_histogram() +
+# #  scale_x_log10() +
+#   xlab("Average Piece-Wise Relative Fitness") +
+#   facet_wrap(Condition~Time.Sim, ncol = 10) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# 
+# STRAIN <- filter(All_averages_GR.sim.5, Condition != "Avg_CN", Replicate == "1", Strain == "YLR024C")
+# 
+# ggplot(filter(All_averages_GR.sim.5, Condition != "Avg_CN", Replicate == "1") , aes(y = PW_GR, x= Time.Sim, color = Condition)) +
+#   geom_line(aes(group = Strain), lwd = 0.05) +
+#   geom_line(data = STRAIN, aes(group = Strain), lwd = 0.05, color = "black") +
+#  # scale_y_log10() +
+#   ylab("Relative Piece-Wise Fitness") +
+#   xlab("Time (hrs)") +
+#   facet_wrap(~Condition, ncol = 2, scales = "free") + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# 
+# All_averages_GR.sim.6 <- All_averages_GR.sim.5 %>%
+#   filter( Condition != "Avg_CN", Replicate == c("1")) %>%
+#     dplyr::select(-Replicate) %>%
+#       spread(Time.Sim, PW_GR) %>%
+#         gather(Time_measurement, Growth_Rate, -Condition, -Strain)  %>%
+#           mutate(Time_measurement = fct_relevel(Time_measurement, c("full_avg_240", "24", "48", "72", "96", "120", "144", "168", "192", "216", "240"))) %>%
+#             group_by(Condition, Time_measurement) %>%
+#               mutate(Variance = var(Growth_Rate, na.rm = TRUE))
+          
+
+#Check if all replicates are actually the average and this is an issue in the dataframe, they are.
+# ggplot(filter(All_averages_GR.sim.5, Condition != "Avg_CN", Replicate == "1"), aes(y = PW_GR, x= Condition, color = full_avg_240)) +
+# geom_quasirandom(dodge.width=.8, alpha = 0.5) + 
+# facet_wrap(~Time.Sim)
+
+#Variance
+# ggplot(filter(All_averages_GR.sim.6, Condition %in% c("Nlim", "Clim", "Switch")), aes(y = Variance, x= Time_measurement, color = Condition)) +
+#   geom_point() +
+#   geom_line() +
+#   ylab("Fitness Variance") +
+#   scale_color_manual(values = c(Clim_col, Nlim_col, Switch_col))
+# 
+# v1 <- ggplot(filter(All_averages_GR.sim.6, Condition %in% c("Nlim", "Clim", "Switch")), aes(y = Growth_Rate, x= Time_measurement, color = Condition)) +
+#   geom_quasirandom(dodge.width=.8, alpha = 0.5, size = 0.5) +
+#   ylab("Fitness")  +
+#   xlab("Time Point (hours)")  +
+#   scale_color_manual(values = c(Clim_col, Nlim_col, Switch_col))
+# 
+# ggsave(plot = v1, height=6, width=8, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure4/Figure5.pdf", useDingbats=FALSE)
+
+# ggplot(filter(All_averages_GR.sim.6, Condition %in% c("Nlim", "Clim", "Switch")), aes(y = Growth_Rate, x= Time_measurement, color = Condition)) +
+#   geom_violin(dodge.width=.8, alpha = 0.5, size = 0.5) +
+#   ylab("Fitness") +
+#   scale_color_manual(values = c(Clim_col, Nlim_col, Switch_col)) +
+#   facet_wrap(~Condition, ncol = 1)
+
+```
+
+
+Create a PDF with all the fits for all genotypes
+```{r}
+##############################  
+#Supplementary figure for ERAD
+#Hrd1, Hrd3, Der1, USA1, Cue5, Yos9
+
+ERAD_STRAIN <- c("YOL013C", "YLR207W", "YBR201W", "YML029W", "YOR042W", "YDR057W")
+
+p1 = ggplot(filter(joined_coef_ynorm_pred, Strain %in% ERAD_STRAIN, Data == "Full", Condition %in% c("Nlim", "Clim", "Switch")), aes(x=TimePoint, y= log2(Ynorm))) +
+    geom_line(data = filter(t.sim.full.final, Strain %in% ERAD_STRAIN, Condition %in% c("Nlim", "Clim", "Switch")), aes(x = Time.Sim, y = predicted, color = Condition, group = interaction(Condition, Replicate)), size = 1) +
+    geom_point(aes(shape = Replicate, fill = Condition), size = 3, color = "black", shape = 21) +
+    facet_wrap(~Strain) +
+    xlab("Time (hrs)") +
+    scale_fill_manual(values=c(Clim_col, Nlim_col, Switch_col)) +
+    scale_color_manual(values=c(Clim_col, Nlim_col, Switch_col))
+
+ggsave(plot = p1, height=6, width=8, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Figure4-1.pdf", useDingbats=FALSE)
+
+# Make plots for Switch, Nlim, Clim
+plot_list_p = list()
+  for(i in 1:dim(distinct(as.data.frame(t.sim.full.final$Strain)))[1]){
+  
+print(i)
+
+STRAIN <- distinct(as.data.frame(t.sim.full.final$Strain))[i,]
+    
+#STRAIN <- "YFL021W"
+
+p = ggplot(filter(joined_coef_ynorm_pred, Strain==STRAIN, Condition %in% c("Nlim", "Clim", "Switch")), aes(x=TimePoint, y= log2(Ynorm), alpha = Data)) +
+    geom_line(data = filter(t.sim.full.final, Strain==STRAIN, Condition %in% c("Nlim", "Clim", "Switch")), aes(x = Time.Sim, y = predicted, color = Replicate), size = 1) +
+    geom_point(aes(shape = Replicate, fill = Replicate), size = 3, color = "black", shape = 21) +
+    facet_wrap(~Condition) +
+    scale_alpha_discrete(range=c(1, 0.5)) +
+    scale_fill_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    scale_color_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    ggtitle(STRAIN) +
+    theme_bw()
+
+    plot_list_p[[i]] = p
+}
+
+# Thia makes the PDFs for all genes.
+
+library(gridExtra)
+
+pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Three_Condition_Plots.pdf")
+
+marrangeGrob(plot_list_p, nrow=3, ncol=1)  
+  
+dev.off()  
+
+# Make plots for PulseAS and PulseGln
+plot_list_q = list()
+  for(i in 1:dim(distinct(as.data.frame(t.sim.full.final$Strain)))[1]){
+  
+print(i)
+
+STRAIN <- distinct(as.data.frame(t.sim.full.final$Strain))[i,]
+    
+q = ggplot(filter(joined_coef_ynorm_pred, Strain==STRAIN, Condition %in% c("PulseAS", "PulseGln")),aes(x=TimePoint, y= log2(Ynorm))) +
+    geom_line(data = filter(t.sim.full.final, Strain==STRAIN, Condition %in% c("PulseAS", "PulseGln")), aes(x = Time.Sim, y = predicted, color = Replicate), size = 1) +
+    geom_point(aes(shape = Replicate, fill = Replicate), size = 3, color = "black", shape = 21) +
+    facet_wrap(~Condition) +
+    scale_fill_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    scale_color_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    ggtitle(STRAIN) +
+    theme_bw()
+
+    plot_list_q[[i]] = q
+}
+
+#This makes pdfs for all genes in PulseAS and PulseGln
+pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Two_Condition_Plots.pdf")
+
+marrangeGrob(plot_list_q, nrow=3, ncol=2)
+
+dev.off()
+
+t <- seq(1, 240, by = 10)
+val <- 0.5*sin(pi*f*t - 20)
+plot(t, val)
+lines(t, val)
+
+#?
+# ggplot(filter(joined_coef_ynorm_pred, Condition %in% c("Switch"), Model == "Periodic"),aes(x = TimePoint, y = log2(Ynorm))) +
+#     geom_line(data = filter(t.sim.full.final, Condition %in% c("Switch"), Model == "Periodic"), aes(x = Time.Sim, y = predicted, group = c(Strain)), size = 1) +
+# #    geom_point(aes(), size = 3, shape = 21) +
+#     facet_wrap(Replicate ~ wave) +
+# #    scale_fill_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+# #    scale_color_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+# #    ggtitle(STRAIN) +
+#     theme_bw()
+
+test <- filter(t.sim.full.final, Condition %in% c("Switch"), Model == #"Periodic", theta < -0.5, theta > -1.3)
+"Periodic")
+                 
+test1 <- distinct(filter(test[,-4], Time.Sim == 0, Replicate == 1))
+test1b<-data.frame(arrange(test1, desc(theta)))
+write_tsv(data.frame(test1b$Strain),"/Users/farah/Desktop/rev_phase_shift_list")
+
+test2 <- filter(t.sim.full.final, Condition %in% c("Switch"), Model == "Periodic", theta > 0.5, theta < 1.3)
+
+test3 <- distinct(filter(test2[,-4], Time.Sim == 0, Replicate == 1))
+
+test4 <- filter(t.sim.full.final, Condition %in% c("Switch"), Model == "Periodic", theta < -1,  theta > -1.0013)
+
+test5 <- distinct(filter(test4[,-4]))
+
+test6 <- filter(t.sim.full.final, Condition %in% c("Switch"), Model == "Periodic", theta > 1,  theta < 1.0013)
+
+test7 <- distinct(filter(test6[,-4]))
+
+# ggplot(filter(test4, Strain == "YDR483W", Replicate == 1), aes(y = predicted , x = Time.Sim, group = Strain)) +
+#   geom_rect(aes(xmin = 0, xmax = 30, ymin = -Inf, ymax = Inf), fill = Nlim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 30, xmax = 60, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 60, xmax = 90, ymin = -Inf, ymax = Inf), fill = Nlim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 90, xmax = 120, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 120, xmax = 150, ymin = -Inf, ymax = Inf), fill = Nlim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 150, xmax = 180, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 180, xmax = 210, ymin = -Inf, ymax = Inf), fill = Nlim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 210, xmax = 240, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+#   xlab("Time (hrs)") +
+#   ylab("Predicted Ynorm") +
+#   geom_line(lwd=2) +
+#   theme_bw()
+
+# ggplot(filter(test7, Strain == "YBR284W", Replicate == 1), aes(y = predicted , x = Time.Sim, group = Strain)) +
+#   geom_rect(aes(xmin = 0, xmax = 30, ymin = -Inf, ymax = Inf), fill = Nlim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 30, xmax = 60, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 60, xmax = 90, ymin = -Inf, ymax = Inf), fill = Nlim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 90, xmax = 120, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 120, xmax = 150, ymin = -Inf, ymax = Inf), fill = Nlim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 150, xmax = 180, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 180, xmax = 210, ymin = -Inf, ymax = Inf), fill = Nlim_col, alpha = 0.01,linetype=0) +
+#   geom_rect(aes(xmin = 210, xmax = 240, ymin = -Inf, ymax = Inf), fill = Clim_col, alpha = 0.01,linetype=0) +
+#   geom_line(lwd=2) +
+#   xlab("Time (hrs)") +
+#   ylab("Predicted Ynorm") +
+#   theme_bw()
+
+#Keep this
+ggplot(filter(distinct(t.sim.full.final[,-4]), Condition %in% c("Switch"), Model == "Periodic", Replicate == 1, Time.Sim == 0),aes( x = theta2)) +
+  geom_histogram(bins = 50) +
+  theme_bw()
+
+# plot(filter(distinct(t.sim.full.final[,-4]), Condition %in% c("Switch"), Model == "Periodic", Replicate == 1, Time.Sim == 0)$theta, filter(distinct(t.sim.full.final[,-4]), Condition %in% c("Switch"), Model == "Periodic", Replicate == 1, Time.Sim == 0)$theta2)
+
+# ggplot(filter(joined_coef_ynorm_pred, Condition %in% c("Switch"), Model == "Periodic", Replicate == 1, TimePoint == 0),aes( x = theta)) +
+#   geom_histogram()
+
+```
+
+
+Plot bargraph of the overview of results from the above script
+This Chunk probably needs to be deleted
+```{r}
+# #Make a df of results
+# non.dep_df<-data.frame(Names.non.dependent,"non_significant")
+# colnames(non.dep_df)<-c("Strain","Polynomial")
+# 
+# linear_df<-data.frame(Names.linear,"linear")
+# colnames(linear_df)<-c("Strain","Polynomial")
+# 
+# quadratic_df<-data.frame(Names.quadratic,"quadratic")
+# colnames(quadratic_df)<-c("Strain","Polynomial")
+# 
+# cubic_df<-data.frame(Names.cubic,"cubic")
+# colnames(cubic_df)<-c("Strain","Polynomial")
+# 
+# periodic_df<-data.frame(namesPeriodic,"periodic")
+# colnames(periodic_df)<-c("Strain","Polynomial")
+# 
+# full_model_df1<-rbind(non.dep_df,linear_df)
+# full_model_df2<-rbind(full_model_df1,quadratic_df)
+# full_model_df3<-rbind(full_model_df2,cubic_df) 
+# full_model_df<-rbind(full_model_df3,periodic_df) #total size is 3445 something is missing
+# 
+# model_summary<-full_model_df%>%
+#   group_by(Polynomial) %>%
+#     summarise(count=n())
+#   
+# ggplot(model_summary,aes(x=Polynomial, y=count)) +
+# geom_bar(stat = "identity", position = position_dodge()) +
+#   ylab("Number of Strains") +
+#   xlab("Behavior")
+
+
+```
+
+#Comparing results from different conditions
+These probably need to be deleted
+```{r}
+# 
+# full_model_df_conditions<-rbind(rbind(full_model_df_nlim,full_model_df_switch),full_model_df_clim)
+# 
+# model_summary_full<-full_model_df_conditions%>%
+#   group_by(Polynomial,Condition) %>%
+#     summarise(count=n())
+
+#model_summary_nlim<-model_summary
+#model_summary_switch<-model_summary
+#model_summary_clim<-model_summary
+
+#setwd("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure3")
+#pdf(file = "Classification_summary.pdf")
+
+#ggplot(model_summary_full,aes(x=Polynomial, y=count, fill=Condition)) +
+#geom_bar(stat = "identity", position = position_dodge(), width = 0.75) +
+#  ylab("Number of Strains") +
+#  xlab("Behavior") +
+#  theme_bw()
+
+#dev.off()
+
+#Would these results change if they only included genotypes that had data in all three conditions?
+#full_model_df_conditions_intersect<-full_model_df_conditions %>%
+#  group_by(Strain) %>%
+#      filter(n()=="3")
+
+#info2<-full_model_df_conditions %>% #This is just a check
+#  group_by(Strain) %>%
+#    summarise(n=n()) %>%
+#      filter(n=="3")
+      
+#model_summary_full_intersect<-full_model_df_conditions_intersect%>%
+#  group_by(Polynomial,Condition) %>%
+#    summarise(count=n())
+
+#setwd("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure3")
+#pdf(file = "Classification_summary_intersect.pdf")
+
+#ggplot(model_summary_full_intersect,aes(x=Polynomial, y=count, fill=Condition)) +
+#geom_bar(stat = "identity", position = position_dodge()) +
+#  ylab("Number of Strains") +
+#  xlab("Behavior") +
+#  theme_bw()
+
+#dev.off()
+
+#Trying PCA using 0's and 1's
+#full_model_df_conditions_intersect_test<-full_model_df_conditions_intersect
+#full_model_df_conditions_intersect_test$Positive<-1
+#conditions_intersect_spread<-spread(full_model_df_conditions_intersect_test,Polynomial, value=Positive,fill=0)
+#rownames(conditions_intersect_spread)<-conditions_intersect_spread$Strain
+#Non-dependence=0, Linear=1, Quadratic=2, Cubic=3
+#library(ggfortify)
+
+#full_model_df_conditions_intersect_test$Polynomial<-gsub("non_significant",0,full_model_df_conditions_intersect_test$Polynomial)
+# #full_model_df_conditions_intersect_test$Polynomial<-gsub("linear",1,full_model_df_conditions_intersect_test$Polynomial)
+# #full_model_df_conditions_intersect_test$Polynomial<-gsub("quadratic",2,full_model_df_conditions_intersect_test$Polynomial)
+# #full_model_df_conditions_intersect_test$Polynomial<-gsub("cubic",3,full_model_df_conditions_intersect_test$Polynomial)
+# 
+# #conditions_intersect_spread<-spread(full_model_df_conditions_intersect_test,Condition, value=Polynomial)
+# #conditions_intersect_spread$Clim<-as.numeric(conditions_intersect_spread$Clim)
+# #conditions_intersect_spread$Nlim<-as.numeric(conditions_intersect_spread$Nlim)
+# #conditions_intersect_spread$Switch<-as.numeric(conditions_intersect_spread$Switch)
+# 
+# #pca_res <- prcomp(as.matrix(conditions_intersect_spread[,2:4]), scale. = TRUE)
+# library(plotly)
+# #autoplot(pca_res)
+# conditions_intersect_spread
+# 
+# plot_ly(test, x=~Clim, y=~Nlim, z=~Switch, type="scatter3d", mode="markers", color=~n, xlab = "a")
+# 
+# #Trying ggplot
+# library("gg3D")
+# 
+# ## An empty plot with 3 axes
+# qplot(x=, y=, z=, geom="blank") + 
+#   theme_void() +
+#   axes_3D()
+#   
+# 
+# ggplot(conditions_intersect_spread, aes(x=Clim, y=Nlim, z=Switch)) + 
+# #  theme_void() +
+#   axes_3D() +
+#   stat_3D() #+
+# #  xlim(0,3)+
+#  geom_count(aes(x=Clim, y=Nlim, z=Switch))
+# 
+#  #I will test a summary df
+#  
+#  test<-conditions_intersect_spread%>%
+#    group_by(Clim,Nlim,Switch)%>%
+#     summarise(n=n())
+# 
+#  qplot(x=0, y=0, z=0, geom="blank") + 
+#   theme_void() +
+#   axes_3D()
+#   
+# 
+# ggplot(test, aes(x=Clim, y=Nlim, z=Switch, size=n,color=rownames(test))) +
+#   theme_void() +
+#   axes_3D() +
+#   stat_3D(alpha=0.5) +
+#   labs_3D(labs=c("Clim", "Nlim", "Switch"), hjust=c(-0.2,1,1), vjust=c(-0.2, -0.2, -0.2), angle=c(36, -36, 90)) +
+#   theme(legend.position="none")
+#  xlim(0,3)+
+# geom_count(aes(x=Clim, y=Nlim, z=Switch))
+
+  
+#What do the discrete profiles of genotypes look like, ie for a single genotype does it have the same behavior in all conditions or different
+#library(VennDiagram)
+
+```
+
+GO term enrichment
+This should not be deleted and it should be revisited
+```{r}
+
+####Test
+Switch_df <- filter(GOterm_df, Condition == "Switch", Model == "Non-Significant") 
+df<-as.data.frame(Switch_df$Strain)
+write_tsv(df, path = "/Users/farah/Desktop/Switch_All_List", col_names = FALSE)
+####
+
+GOterm_baseList <- joined_coef_ynorm_pred %>%
+   filter(Condition == "Switch") %>%
+      distinct(Strain)
+
+GOterm_df <- joined_coef_ynorm_pred %>%
+  dplyr::select(-TimePoint, -Ynorm, -Replicate, -predicted, -Replicate_2_vs_1, -Replicate_3_vs_1) %>%
+   group_by(Condition) %>%
+      distinct()
+
+library(clusterProfiler)
+library(enrichplot)
+library(tidyverse)
+library(repurrrsive)
+
+organism = "org.Sc.sgd.db"
+#BiocManager::install(organism, character.only = TRUE)
+library(organism, character.only = TRUE)
+
+geneList <- as.character(GOterm_baseList[-3907,])
+
+annotations_orgDb <- AnnotationDbi::select(org.Sc.sgd.db, # database
+                                     keys = (geneList),
+                                     columns = c("ENSEMBL", "GENENAME"), #information to retreive for given data
+                                     keytype = "ENSEMBL") # type of data given in 'keys' argument
+
+Switch_df <- filter(GOterm_df, Condition == "Switch") 
+
+Switch_gene_list <- test1b$theta
+names(Switch_gene_list) <- test1b$Strain
+  
+Switch_padj_list <- Switch_df$padj #I changed this to be estimated slope
+
+names(Switch_padj_list) <- Switch_df$Strain
+# omit any NA values 
+Switch_gene_list<-na.omit(Switch_padj_list)
+# sort the list in decreasing order (required for clusterProfiler)
+Switch_gene_list = sort(Switch_gene_list, decreasing = TRUE)
+
+gse_Switch <- gseGO(geneList = Switch_gene_list, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = organism, 
+             pAdjustMethod = "none")
+
+enrichplot::dotplot(gse_Switch)
+enrichplot::dotplot(gse_Switch, showCategory=10, split=".sign") + facet_grid(.~.sign)
+
+
+# test<-full_model_df_conditions_intersect%>%
+#   filter(Condition=="Nlim",Polynomial=="quadratic")
+# test<-test$Strain
+
+test<-as.factor(namesPeriodic)
+
+go_enrich_test <- enrichGO(gene = test,
+                      universe = (geneList),
+                      OrgDb = organism, 
+                      keyType = "ENSEMBL",
+                #      readable = T,
+                      ont = "CC",
+                      pvalueCutoff = 0.1, 
+                      qvalueCutoff = 0.10)
+
+pdf(file = "GOterm_Nlim_Quadratic.pdf",width=10, height=3)
+enrichplot::dotplot(go_enrich_test)
+
+dev.off()
+#What a disappointment.
+
+barplot(go_enrich_Switch_cubic, 
+        drop = TRUE, 
+        showCategory = 10, 
+        title = "GO Biological Pathways",
+        font.size = 8)
+
+
+gse_Clim <- gseGO(geneList=Clim_gene_list, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = organism, 
+             pAdjustMethod = "none")
+
+gse_Nlim <- gseGO(geneList=Nlim_gene_list, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = organism, 
+             pAdjustMethod = "none")
+
+
+
+```
+
+
+Create contingency tables to test the question of whether there is a relationship between type of behavior and condition (keep)
+```{r}
+#Make contingency table of CNS vs NLQCP
+contingency_cond_beh <- full_model_conditions %>%
+  filter(Data=="Full") %>%
+  group_by(Condition, Polynomial, Data) %>%
+    summarise(Count = n()) %>%
+        spread(key = Polynomial, value = Count)
+
+contingency_cond_beh_mat <- as.matrix(contingency_cond_beh[,-c(1,2)])
+rownames(contingency_cond_beh_mat) <- contingency_cond_beh$Condition
+
+chi_res_beh <- chisq.test(contingency_cond_beh_mat)
+
+#X-squared = 4452, df = 8, p-value < 2.2e-16
+#Therefore the null hypothesis is rejected and behavior type is not independent from condition
+
+#The next question is whether condition and growth rate sign are independent
+#Should i use mean growth rate sign instead here? I will try that since that seems like the simplest thing
+#From MeanGrowthRate.Rmd
+contingency_cond_sign <- adjTest %>%
+#  gather(key = Condition, value = MeanGrowthRate, -Strain) %>%
+    mutate(Sign = ifelse(MeanGrowthRate > 0, "pos",
+        ifelse(MeanGrowthRate == 0, "zero",
+          ifelse(MeanGrowthRate < 0, "neg", NA)))) %>%
+      group_by(Condition, Sign, Data) %>%
+        summarise(Count = n()) %>%
+         spread(key = Sign, value = Count)
+    
+contingency_cond_sign_mat <- as.matrix(contingency_cond_sign[,-c(1,2)])
+rownames(contingency_cond_sign_mat) <- contingency_cond_sign$Condition
+
+chi_res_sign <- chisq.test(contingency_cond_sign_mat)
+
+#X-squared = 393.99, df = 4, p-value < 2.2e-16
+#Therefore the null hypothesis is rejected and growth rate sign is not independent from condition
+#I think the main contributor here is Clim since it seems like there were many dying genotypes  
+
+#Can I remake the summary barplot but include shading based on pos and neg values?
+full_summary_beh_data <- adjTest %>%
+  dplyr::select(Condition, Strain, MeanGrowthRate, Model, Data) %>%
+    mutate(Sign = ifelse(MeanGrowthRate > 0, "pos",
+        ifelse(MeanGrowthRate == 0, "zero",
+          ifelse(MeanGrowthRate < 0, "neg", NA)))) %>%
+      group_by(Condition, Model, Data) %>%
+        mutate(Total_Count = n()) %>% 
+          group_by(Condition, Model, Sign, Data) %>%
+           summarise(Count = n()) %>%
+             ungroup() %>%
+              complete(Model, Condition, Sign, Data, fill = list(0)) %>%
+                drop_na
+
+full_summary_beh_data$Model <- factor(full_summary_beh_data$Model, levels = c("Non-Significant","Linear","Quadratic","Cubic","Periodic"))
+
+full_summary_beh_data$Sign <- factor(full_summary_beh_data$Sign, levels = c("pos","neg"))
+
+# q1 <- ggplot(filter(full_summary_beh_data, Condition %in% c("Clim", "Nlim", "Switch")), aes(x = Model, y = Count, fill = Condition, alpha = Data, fill = Condition)) +
+# geom_bar(width = 0.8, stat = "identity", position = position_dodge(width = 0.9),) +
+#   ylab("Number of Strains") +
+#   xlab("Behavior") +
+#   facet_wrap(Sign ~ Data, nrow = 2) +
+#   scale_alpha_discrete(range=c(1,0.5))+
+#   scale_fill_manual(values=c(Clim_col, Nlim_col, Switch_col))+
+#   theme_bw()
+# 
+# pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure3/Figure3B", width=6, height=7)
+# 
+# q1
+# 
+# dev.off()
+
+q1 <- ggplot(filter(full_summary_beh_data, Condition %in% c("Clim", "Nlim", "Switch"), Data == "Full"), aes(x = Model, y = Count, fill = Condition, pattern = Sign)) +
+  geom_bar_pattern(width = 0.8, stat = "identity", position = position_dodge(preserve = "single"),
+                   color = "black", 
+                   pattern_fill = "black",
+                   pattern_angle = 45,
+                   pattern_density = 0.1,
+                   pattern_spacing = 0.025,
+                   pattern_key_scale_factor = 0.6) + 
+      labs(x = "Behavior", y = "Number of Strains", pattern = "Sign") +
+      scale_pattern_manual(values = c(neg = "stripe", pos = "none")) +
+      scale_fill_manual(values=c(Clim_col, Nlim_col, Switch_col))+
+      guides(pattern = guide_legend(override.aes = list(fill = "white")),
+         fill = guide_legend(override.aes = list(pattern = "none")))
+
+ggsave(plot = q1, height=4, width=5, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure3/Figure3F.pdf", useDingbats=FALSE)
+
+q2 <- ggplot(filter(full_summary_beh_data, Condition %in% c("Clim", "Nlim", "Switch"), Data == "Excluded"), aes(x = Model, y = Count, fill = Condition, pattern = Sign)) +
+  geom_bar_pattern(width = 0.8, stat = "identity", position = position_dodge(preserve = "single"),
+                   color = "black", 
+                   pattern_fill = "black",
+                   pattern_angle = 45,
+                   pattern_density = 0.1,
+                   pattern_spacing = 0.025,
+                   pattern_key_scale_factor = 0.6) + 
+      labs(x = "Behavior", y = "Number of Strains", pattern = "Sign") +
+      scale_pattern_manual(values = c(neg = "stripe", pos = "none")) +
+      scale_fill_manual(values=c(Clim_col, Nlim_col, Switch_col))+
+      guides(pattern = guide_legend(override.aes = list(fill = "white")),
+         fill = guide_legend(override.aes = list(pattern = "none")))
+
+#This plots the same as q1 but with excluding the highest performing genotypes
+
+#ggsave(plot = q2, height=4, width=5, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure3/Figure3F.1.pdf", useDingbats=FALSE)
+
+#remotes::install_github("coolbutuseless/ggpattern")
+library(ggpattern)
+
+q3 <- ggplot(filter(full_summary_beh_data, Data == "Full"), aes(x = Model, y = Count, fill = Condition, pattern = Sign)) +
+  geom_bar_pattern(width = 0.8, stat = "identity", position = position_dodge(preserve = "single"),
+                   color = "black", 
+                   pattern_fill = "black",
+                   pattern_angle = 45,
+                   pattern_density = 0.1,
+                   pattern_spacing = 0.025,
+                   pattern_key_scale_factor = 0.6) + 
+      labs(x = "Behavior", y = "Number of Strains", pattern = "Sign") +
+      scale_pattern_manual(values = c(neg = "stripe", pos = "none")) +
+      scale_fill_manual(values=c(Clim_col, Nlim_col, PulseAS_col, PulseGln_col, Switch_col))+
+      guides(pattern = guide_legend(override.aes = list(fill = "white")),
+         fill = guide_legend(override.aes = list(pattern = "none")))
+
+#ggsave(plot = q2, height=6, width=12, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Figure3B-1-full.pdf", useDingbats=FALSE)
+
+q3.1 <- ggplot(filter(full_summary_beh_data, Data == "Excluded"), aes(x = Model, y = Count, fill = Condition, pattern = Sign)) +
+  geom_bar_pattern(width = 0.8, stat = "identity", position = position_dodge(preserve = "single"),
+                   color = "black", 
+                   pattern_fill = "black",
+                   pattern_angle = 45,
+                   pattern_density = 0.1,
+                   pattern_spacing = 0.025,
+                   pattern_key_scale_factor = 0.6) + 
+      labs(x = "Behavior", y = "Number of Strains", pattern = "Sign") +
+      scale_pattern_manual(values = c(neg = "stripe", pos = "none")) +
+      scale_fill_manual(values=c(Clim_col, Nlim_col, PulseAS_col, PulseGln_col, Switch_col))+
+      guides(pattern = guide_legend(override.aes = list(fill = "white")),
+         fill = guide_legend(override.aes = list(pattern = "none")))
+
+q3.2 <- q3 + q3.1 + plot_layout(ncol=1,heights=c(2,2))
+
+ggsave(plot = q3.2, height=9, width=15, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Figure3B-1.pdf", useDingbats=FALSE)
+
+q4 <- ggplot(filter(joined_coef_ynorm_pred, Condition %in% c( "Nlim"), Strain == "YDR284C"),aes(x = TimePoint, y =  log2(Ynorm))) +
+    geom_line(data = filter(t.sim.full.final, Condition %in% c("Nlim"), Strain == "YDR284C"), aes(x = Time.Sim, y = predicted, color = Replicate), size = 1) +
+    geom_point(aes(shape = Replicate, fill = Replicate), size = 3, color = "black", shape = 21) +
+    ylim(4, 10) +
+    xlab("Time (hrs)") +
+    scale_fill_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    scale_color_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    ggtitle("YDR284C")
+
+ggsave(plot = q4, height=4, width=5, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure3/Figure3A.pdf", useDingbats=FALSE)
+
+q5 <- ggplot(filter(joined_coef_ynorm_pred, Condition %in% c( "Switch"), Strain == "YDR435C"),aes(x=TimePoint, y= log2(Ynorm))) +
+    geom_line(data = filter(t.sim.full.final, Condition %in% c("Switch"), Strain == "YDR435C"), aes(x = Time.Sim, y = predicted, color = Replicate), size = 1) +
+    geom_point(aes(shape = Replicate, fill = Replicate), size = 3, color = "black", shape = 21) +
+    ylim(4, 10) +
+    xlab("Time (hrs)") +
+    scale_fill_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    scale_color_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    ggtitle("YDR435C")
+
+ggsave(plot = q5, height=4, width=5, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure3/Figure3B.pdf", useDingbats=FALSE)
+
+q6 <- ggplot(filter(joined_coef_ynorm_pred, Condition %in% c( "Clim"), Strain == "YDR272W"),aes(x=TimePoint, y= log2(Ynorm))) +
+    geom_line(data = filter(t.sim.full.final, Condition %in% c("Clim"), Strain == "YDR272W"), aes(x = Time.Sim, y = predicted, color = Replicate), size = 1) +
+    xlab("Time (hrs)") +
+    geom_point(aes(shape = Replicate, fill = Replicate), size = 3, color = "black", shape = 21) +
+    scale_fill_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    scale_color_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    ggtitle("YDR272W")
+
+ggsave(plot = q6, height=4, width=5, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure3/Figure3C.pdf", useDingbats=FALSE)
+
+q7 <- ggplot(filter(joined_coef_ynorm_pred, Condition %in% c( "Nlim"), Strain == "YDR463W"),aes(x=TimePoint, y= log2(Ynorm))) +
+    geom_line(data = filter(t.sim.full.final, Condition %in% c("Nlim"), Strain == "YDR463W"), aes(x = Time.Sim, y = predicted, color = Replicate), size = 1) +
+    xlab("Time (hrs)") +
+    geom_point(aes(shape = Replicate, fill = Replicate), size = 3, color = "black", shape = 21) +
+    scale_fill_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    scale_color_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    ggtitle("YDR463W")
+
+ggsave(plot = q7, height=4, width=5, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure3/Figure3D.pdf", useDingbats=FALSE)
+
+q8 <- ggplot(filter(joined_coef_ynorm_pred, Condition %in% c( "Switch"), Strain == "YDR476C"),aes(x=TimePoint, y= log2(Ynorm))) +
+    geom_line(data = filter(t.sim.full.final, Condition %in% c("Switch"), Strain == "YDR476C"), aes(x = Time.Sim, y = predicted, color = Replicate), size = 1) +
+    xlab("Time (hrs)") +
+    geom_point(aes(shape = Replicate, fill = Replicate), size = 3, color = "black", shape = 21) +
+    scale_fill_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    scale_color_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+    ggtitle("YDR476C")
+
+ggsave(plot = q8, height=4, width=5, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure3/Figure3E.pdf", useDingbats=FALSE)
+
+
+
+#Test of exclusion of top performers
+# STRAIN <- "YDR476C"
+# ggplot(filter(joined_coef_ynorm_pred, Condition %in% c( "Switch"), Strain == STRAIN),aes(x=TimePoint, y= log2(Ynorm))) +
+#     geom_line(data = filter(t.sim.full.final, Condition %in% c("Switch"), Strain == STRAIN), aes(x = Time.Sim, y = predicted, color = as.factor(Replicate)), size = 1) +
+#     geom_point(aes(shape = as.factor(Replicate), fill = as.factor(Replicate)), size = 3, color = "black", shape = 21) +
+# #    ylim(4, 10) +
+#     scale_fill_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+#     scale_color_manual(values=c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2")) +
+#     ggtitle(STRAIN) +
+#     theme_bw()
+
+```
+
+GO-term enrichment with average strain fitness
+```{r}
+# # Return the Ensembl IDs for a set of genes
+# annotations_orgDb <- AnnotationDbi::select(org.Sc.sgd.db, # database
+#                                      keys = as.character(adjTest$Strain),  # data to use for retrieval
+#                                      columns = c("ENSEMBL", "GENENAME"), #information to retreive for given data
+#                                      keytype = "ENSEMBL") # type of data given in 'keys' argument
+# Switch_df <- filter(adjTest, Condition == "Switch")
+# 
+# Switch_original_gene_list <- Switch_df$MeanGrowthRate #I changed this to be estimated slope
+# # name the vector
+# names(Switch_original_gene_list) <- Switch_df$Strain
+# # omit any NA values 
+# Switch_gene_list<-na.omit(Switch_original_gene_list)
+# # sort the list in decreasing order (required for clusterProfiler)
+# Switch_gene_list = sort(Switch_gene_list, decreasing = TRUE)
+# 
+# Nlim_df <- filter(adjTest, Condition == "Nlim")
+# 
+# Nlim_original_gene_list <- Nlim_df$MeanGrowthRate #I changed this to be estimated slope
+# # name the vector
+# names(Nlim_original_gene_list) <- Nlim_df$Strain
+# # omit any NA values 
+# Nlim_gene_list<-na.omit(Nlim_original_gene_list)
+# # sort the list in decreasing order (required for clusterProfiler)
+# Nlim_gene_list = sort(Nlim_gene_list, decreasing = TRUE)
+# 
+# 
+# Clim_df <- filter(adjTest, Condition == "Clim")
+# 
+# Clim_original_gene_list <- Clim_df$MeanGrowthRate #I changed this to be estimated slope
+# # name the vector
+# names(Clim_original_gene_list) <- Clim_df$Strain
+# # omit any NA values 
+# Clim_gene_list<-na.omit(Clim_original_gene_list)
+# # sort the list in decreasing order (required for clusterProfiler)
+# Clim_gene_list = sort(Clim_gene_list, decreasing = TRUE)
+# 
+# 
+# gse_Switch <- gseGO(geneList=Switch_gene_list, 
+#              ont ="ALL", 
+#              keyType = "ENSEMBL", 
+#              nPerm = 10000, 
+#              minGSSize = 3, 
+#              maxGSSize = 800, 
+#              pvalueCutoff = 0.05, 
+#              verbose = TRUE, 
+#              OrgDb = organism, 
+#              pAdjustMethod = "none")
+# 
+# gse_Nlim <- gseGO(geneList=Nlim_gene_list, 
+#              ont ="ALL", 
+#              keyType = "ENSEMBL", 
+#              nPerm = 10000, 
+#              minGSSize = 3, 
+#              maxGSSize = 800, 
+#              pvalueCutoff = 0.05, 
+#              verbose = TRUE, 
+#              OrgDb = organism, 
+#              pAdjustMethod = "none")
+# 
+# gse_Clim <- gseGO(geneList=Clim_gene_list, 
+#              ont ="ALL", 
+#              keyType = "ENSEMBL", 
+#              nPerm = 10000, 
+#              minGSSize = 3, 
+#              maxGSSize = 800, 
+#              pvalueCutoff = 0.05, 
+#              verbose = TRUE, 
+#              OrgDb = organism, 
+#              pAdjustMethod = "none")
+# 
+# 
+# dotplot(gse_Switch, showCategory=10, split=".sign") + facet_grid(.~.sign)
+# 
+# dotplot(gse_Nlim, showCategory=10, split=".sign") + facet_grid(.~.sign)
+# 
+# dotplot(gse_Clim, showCategory=10, split=".sign") + facet_grid(.~.sign)
+# 
+# 
+# dotplot(gse_Nlim@result[["enrichmentScore"]], gse_Nlim@result[["Description"]])
+# 
+# #Make enrichment dataframe
+# slim_nlim <- data.frame(gse_Nlim@result[["enrichmentScore"]],gse_Nlim@result[["Description"]], gse_Nlim@result[["p.adjust"]], gse_Nlim@result[["ID"]], "Nlim")
+# colnames(slim_nlim) <- c("EnrichmentScore", "Description", "pAdj", "GO_ID", "Condition")
+# slim_nlim_pos <- slim_nlim %>% filter(EnrichmentScore > 0)
+# slim_nlim_neg <- slim_nlim %>% filter(EnrichmentScore < 0)
+# 
+# slim_switch <- data.frame(gse_Switch@result[["enrichmentScore"]],gse_Switch@result[["Description"]], gse_Switch@result[["p.adjust"]], gse_Switch@result[["ID"]], "Switch")
+# colnames(slim_switch) <- c("EnrichmentScore", "Description", "pAdj", "GO_ID", "Condition")
+# slim_switch_pos <- slim_switch %>% filter(EnrichmentScore > 0)
+# slim_switch_neg <- slim_switch %>% filter(EnrichmentScore < 0)
+# 
+# slim_clim <- data.frame(gse_Clim@result[["enrichmentScore"]],gse_Clim@result[["Description"]], gse_Clim@result[["p.adjust"]], gse_Clim@result[["ID"]], "Clim")
+# colnames(slim_clim) <- c("EnrichmentScore", "Description", "pAdj", "GO_ID", "Condition")
+# slim_clim_pos <- slim_clim %>% filter(EnrichmentScore > 0)
+# slim_clim_neg <- slim_clim %>% filter(EnrichmentScore < 0)
+# 
+# ggplot(arrange(test_df,desc = EnrichmentScore)[1:5,], aes( x = EnrichmentScore, y = Description)) +
+#   geom_point()
+# 
+# full_slim_pos <- rbind(slim_nlim_pos, rbind(slim_switch_pos, slim_clim_pos))
+# 
+# 
+# library(GSEABase)
+# 
+# fl <- system.file("extdata", "goslim_yeast.obo", package="GSEABase")
+# slim <- getOBOCollection(fl)
+#  
+# NlimId_pos <- slim_nlim_pos$GO_ID
+# NlimCollection_pos <- GOCollection(as.vector(NlimId_pos))
+# slim_res_nlim_pos <- data.frame(goSlim(NlimCollection_pos, slim, "BP"), "Nlim", "Pos")
+# colnames(slim_res_nlim_pos) <- c("Count", "Percent", "Term", "Condition", "Sign")
+# 
+# ClimId_pos <- slim_clim_pos$GO_ID
+# ClimCollection_pos <- GOCollection(as.vector(ClimId_pos))
+# slim_res_clim_pos <- data.frame(goSlim(ClimCollection_pos, slim, "BP"), "Clim", "Pos")
+# colnames(slim_res_clim_pos) <- c("Count", "Percent", "Term", "Condition", "Sign")
+# 
+# SwitchId_pos <- slim_switch_pos$GO_ID
+# SwitchCollection_pos <- GOCollection(as.vector(SwitchId_pos))
+# slim_res_switch_pos <- data.frame(goSlim(SwitchCollection_pos, slim, "BP"), "Switch", "Pos")
+# colnames(slim_res_switch_pos) <- c("Count", "Percent", "Term", "Condition", "Sign")
+# 
+# NlimId_neg <- slim_nlim_neg$GO_ID
+# NlimCollection_neg <- GOCollection(as.vector(NlimId_neg))
+# slim_res_nlim_neg <- data.frame(goSlim(NlimCollection_neg, slim, "BP"), "Nlim", "Neg")
+# colnames(slim_res_nlim_neg) <- c("Count", "Percent", "Term", "Condition", "Sign")
+# 
+# ClimId_neg <- slim_clim_neg$GO_ID
+# ClimCollection_neg <- GOCollection(as.vector(ClimId_neg))
+# slim_res_clim_neg <- data.frame(goSlim(ClimCollection_neg, slim, "BP"), "Clim", "Neg")
+# colnames(slim_res_clim_neg) <- c("Count", "Percent", "Term", "Condition", "Sign")
+# 
+# SwitchId_neg <- slim_switch_neg$GO_ID
+# SwitchCollection_neg <- GOCollection(as.vector(SwitchId_neg))
+# slim_res_switch_neg <- data.frame(goSlim(SwitchCollection_neg, slim, "BP"), "Switch", "Neg")
+# colnames(slim_res_switch_neg) <- c("Count", "Percent", "Term", "Condition", "Sign")
+# 
+# full_slim_pos <- rbind(slim_res_nlim_pos, rbind(slim_res_clim_pos, slim_res_switch_pos))
+# full_slim_neg <- rbind(slim_res_nlim_neg, rbind(slim_res_clim_neg, slim_res_switch_neg))
+# full_slim <- filter(rbind(full_slim_pos, full_slim_neg), Term != "biological_process")
+# 
+# 
+# ggplot(full_slim, aes(x = Condition, y = Term, size = Percent, color = Condition)) +
+#   geom_point() +
+#   facet_wrap(~Sign)
+
+```
+

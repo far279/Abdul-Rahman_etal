@@ -1,0 +1,117 @@
+---
+title: "Figure4"
+output: html_document
+---
+
+```{r}
+#Set theme and colors for the entire document
+theme_set(theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.text=element_text(size=12), axis.title=element_text(size=14), legend.text=element_text(size=12), legend.title=element_text(size=14)))
+
+Clim_col <- "firebrick1"
+Nlim_col <- "royalblue2"
+Switch_col <- "purple3"
+PulseAS_col <- "darkgreen"
+PulseGln_col <- "pink"
+
+```
+
+
+```{r}
+#Calculate mean growth rate
+
+t=c(0, 240)
+
+f=1/60
+
+MeanGrowth_df1 <- full_coefs_conditions %>%
+  mutate(T0_Rep1 = `Intercept`+`I.TimePoint.`*t[1]+`I.TimePoint.2.`*t[1]^2+`I.TimePoint.3.`*t[1]^3+`Sin`*sin(2*pi*f*t[1])+`Cos`*cos(2*pi*f*t[1]),
+         T240_Rep1 = `Intercept`+`I.TimePoint.`*t[2]+`I.TimePoint.2.`*t[2]^2+`I.TimePoint.3.`*t[2]^3+`Sin`*sin(2*pi*f*t[2])+`Cos`*cos(2*pi*f*t[2]),
+         T0_Rep2 = `Replicate_2_vs_1`+`Intercept`+`I.TimePoint.`*t[1]+`I.TimePoint.2.`*t[1]^2+`I.TimePoint.3.`*t[1]^3+`Sin`*sin(2*pi*f*t[1])+`Cos`*cos(2*pi*f*t[1]),
+         T240_Rep2 = `Replicate_2_vs_1`+`Intercept`+`I.TimePoint.`*t[2]+`I.TimePoint.2.`*t[2]^2+`I.TimePoint.3.`*t[2]^3+`Sin`*sin(2*pi*f*t[2])+`Cos`*cos(2*pi*f*t[2]),
+         T0_Rep3 = `Replicate_3_vs_1`+`Intercept`+`I.TimePoint.`*t[1]+`I.TimePoint.2.`*t[1]^2+`I.TimePoint.3.`*t[1]^3+`Sin`*sin(2*pi*f*t[1])+`Cos`*cos(2*pi*f*t[1]),
+         T240_Rep3 = `Replicate_3_vs_1`+`Intercept`+`I.TimePoint.`*t[2]+`I.TimePoint.2.`*t[2]^2+`I.TimePoint.3.`*t[2]^3+`Sin`*sin(2*pi*f*t[2])+`Cos`*cos(2*pi*f*t[2]),
+         T0_mean = rowMeans(cbind(T0_Rep1,T0_Rep2,T0_Rep3), na.rm = TRUE),
+         T240_mean = rowMeans(cbind(T240_Rep1,T240_Rep2,T240_Rep3), na.rm = TRUE)) %>%
+            mutate(MeanGrowthRate=(T240_mean-T0_mean)/240) %>%
+              dplyr::select(Model, Strain, Condition, MeanGrowthRate, Data) %>%
+                filter(Data == "Full")
+
+meanGrowth_model <- MeanGrowth_df1 %>%
+  dplyr::select(Model, Strain, Condition) %>%
+    spread(Condition, Model) %>%
+      dplyr::select(-Clim, -Nlim, -PulseAS, -PulseGln) %>%
+        rename(Switch = "Switch_Behavior")
+
+meanGrowth_GR_beh <- MeanGrowth_df1 %>%
+  dplyr::select(MeanGrowthRate, Strain, Condition) %>%
+    spread(Condition, MeanGrowthRate) %>%
+      left_join(., meanGrowth_model, by = "Strain") %>%
+        drop_na() %>%
+          mutate(Avg_CN = (Clim + Nlim) / 2 ) %>%
+             mutate(Switch_Behavior = fct_relevel(Switch_Behavior, c("NonDependent", "Linear", "Quadratic", "Cubic", "Periodic")))
+
+```
+
+
+#Plot pairwise fitness values
+```{r}
+w1_spear <- paste0("rho = ", round(cor.test(meanGrowth_GR_beh$Clim, meanGrowth_GR_beh$Nlim, method = "spearman")[[4]], digits = 3))
+w1_pval <- paste0("p-val = ", signif(cor.test(meanGrowth_GR_beh$Clim, meanGrowth_GR_beh$Nlim, method = "spearman")[[3]], digits = 3))
+w1 <- ggplot(meanGrowth_GR_beh, aes(y = Clim, x = Nlim, color = Switch_Behavior)) +
+  geom_point() +
+  xlim(-0.05, 0.05) +
+  ylim(-0.05, 0.05) +
+  xlab("C-lim mean growth rate hr-1") +
+  ylab("N-lim mean growth rate hr-1") +
+  scale_color_viridis(discrete = TRUE) +
+  annotate("text", x=-0.03, y=0.05, label= w1_spear) +
+  annotate("text", x=-0.03, y=0.045, label= w1_pval)
+
+w2_spear <- paste0("rho = ", round(cor.test(meanGrowth_GR_beh$Switch, meanGrowth_GR_beh$Nlim, method = "spearman")[[4]], digits = 3))
+w2_pval <- paste0("p-val = ", signif(cor.test(meanGrowth_GR_beh$Switch, meanGrowth_GR_beh$Nlim, method = "spearman")[[3]], digits = 3))
+w2 <- ggplot(meanGrowth_GR_beh, aes(y = Switch, x = Nlim, color = Switch_Behavior)) +
+  geom_point() +
+  xlim(-0.05, 0.05) +
+  ylim(-0.05, 0.05) +
+  xlab("Switch mean growth rate hr-1") +
+  ylab("N-lim mean growth rate hr-1") +
+  scale_color_viridis(discrete = TRUE) +
+  annotate("text", x=-0.03, y=0.05, label= w2_spear) +
+  annotate("text", x=-0.03, y=0.045, label= w2_pval)
+
+w3_spear <- paste0("rho = ", round(cor.test(meanGrowth_GR_beh$Switch, meanGrowth_GR_beh$Clim, method = "spearman")[[4]], digits = 3))
+w3_pval <- paste0("p-val = ", signif(cor.test(meanGrowth_GR_beh$Switch, meanGrowth_GR_beh$Clim, method = "spearman")[[3]], digits = 3))
+w3 <- ggplot(meanGrowth_GR_beh, aes(y = Switch, x = Clim, color = Switch_Behavior)) +
+  geom_point() +
+  xlim(-0.05, 0.05) +
+  ylim(-0.05, 0.05) +
+  xlab("Switch mean growth rate hr-1") +
+  ylab("C-lim mean growth rate hr-1") +
+  scale_color_viridis(discrete = TRUE) +
+  annotate("text", x=-0.03, y=0.05, label= w3_spear) +
+  annotate("text", x=-0.03, y=0.045, label= w3_pval)
+
+w4_spear <- paste0("rho = ", round(cor.test(meanGrowth_GR_beh$Switch, meanGrowth_GR_beh$Avg_CN, method = "spearman")[[4]], digits = 3))
+w4_pval <- paste0("p-val = ", signif(cor.test(meanGrowth_GR_beh$Switch, meanGrowth_GR_beh$Avg_CN, method = "spearman")[[3]], digits = 3))
+w4 <- ggplot(meanGrowth_GR_beh, aes(y = Switch, x = Avg_CN, color = Switch_Behavior)) +
+  geom_point() +
+  xlim(-0.05, 0.05) +
+  ylim(-0.05, 0.05) +
+  xlab("Switch mean growth rate hr-1") +
+  ylab("((C-lim + N-lim)/2) mean growth rate hr-1") +
+  scale_color_viridis(discrete = TRUE) +
+  annotate("text", x=-0.03, y=0.05, label= w4_spear) +
+  annotate("text", x=-0.03, y=0.045, label= w4_pval)
+```
+
+#Save plots
+```{r}
+ggsave(plot = w1, height=4, width=6, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure4/Figure4A.pdf", useDingbats=FALSE)
+
+ggsave(plot = w2, height=4, width=6, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure4/Figure4B.pdf", useDingbats=FALSE)
+
+ggsave(plot = w3, height=4, width=6, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure4/Figure4C.pdf", useDingbats=FALSE)
+
+ggsave(plot = w4, height=4, width=6, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure4/Figure4D.pdf", useDingbats=FALSE)
+```
+

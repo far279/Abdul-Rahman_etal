@@ -1,0 +1,975 @@
+---
+title: "Figure 2C"
+output:
+  pdf_document: default
+  html_document: default
+---
+Predicting mean growth rate based on predictive model and constructing DFE
+
+Using raw data is more difficult to use for predictive mean growth rate because of missing data point between replicates
+
+Chunk 1: Import packages, data, and set theme.
+Chunk 2: Normaliz data using DESeq2 and perform polynomial model fitting.
+Chunk 3:
+
+```{r setup, include=FALSE}
+#BiocManager::install(organism, character.only = TRUE)
+
+#Library packages
+library(tidyverse)
+library(DESeq2)
+library(patchwork)
+library(clusterProfiler)
+library(enrichplot)
+library("org.Sc.sgd.db", character.only = TRUE)
+
+#Set theme and colors for the entire document
+theme_set(theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.text=element_text(size=12),
+        axis.title=element_text(size=14), legend.text=element_text(size=12), legend.title=element_text(size=14)))
+
+Clim_col <- "firebrick1"
+Nlim_col <- "royalblue2"
+Switch_col <- "purple3"
+PulseAS_col <- "darkgreen"
+PulseGln_col <- "pink"
+
+#Import data
+data.directory <- "/Users/farah/Google Drive/Abdul-Rahman et al Barseq/data"
+#data.file.name<-paste(data.directory,'/BARseq_Tidy_Clean.txt',sep="")
+data.directory <- "/Users/farah/Google Drive File Stream/My Drive/Abdul-Rahman et al Barseq/data"
+
+data.file.name <- paste(data.directory,'/ReplicateFilteredData.txt',sep="")
+data <- read.table(file=data.file.name,header=T)
+
+data <- dplyr::select(data, -AdjLibraryCountSums)
+
+data$Data <- "Full"
+
+data_exc <- data %>%
+            mutate(YFL021W = ifelse(Condition %in% c("Nlim", "PulseAS", "PulseGln"), 0, YFL021W),
+                   YDR277C = ifelse(Condition %in% c("Clim"), 0, YDR277C),
+                   YPL056C = ifelse(Condition %in% c("Switch"), 0, YPL056C),
+                   YOR091W = ifelse(Condition %in% c("PulseAS"), 0, YOR091W))
+
+data_exc$Data <- "Excluded"
+
+BarSeq1 <- rbind(data, data_exc)
+```
+
+
+```{r}
+#Choose conditions
+#BarSeq <- data
+BarSeqOrd<-BarSeq1[order(BarSeq1$Condition,BarSeq1$TimePoint,
+                        BarSeq1$Replicate),]
+
+all_conds <- c("Nlim", "Clim", "Switch","PulseAS","PulseGln")
+all_forms <- c("Full", "Excluded")
+
+for (form in all_forms){
+  
+#  BarSeq<-BarSeqOrd[BarSeq1$Data == form, -dim(BarSeqOrd)[2]]
+  
+  for (cond in all_conds){
+  
+  BarSeq<-BarSeqOrd[BarSeqOrd$Data == form, -dim(BarSeqOrd)[2]]
+  CD<-BarSeq[BarSeq$Condition == cond, 1:3]
+  CD[,"Replicate"]<-as.factor(CD[,"Replicate"])
+  CD[,"TimePoint"]<-as.numeric(CD[,"TimePoint"])
+
+  BarSeq[,"Replicate"]<-as.factor(BarSeq[,"Replicate"])
+  BarSeq[,"Condition"]<-as.character(BarSeq[,"Condition"])
+  BarSeq<-BarSeq[BarSeq$Condition==cond,]
+  BarSeq[,"Condition"]<-as.factor(BarSeq[,"Condition"]) #Remove these at the end
+
+  YT<-as.data.frame(BarSeq[BarSeq$Condition==cond,-(1:3)])
+  #dim(YT)
+  #dim(CD)
+  
+  Y<-t(YT) #The count matrix is now genotype-by-libraries
+  LibSizes<-colSums(Y)
+  
+#Filter based on counts and library size counts >10, library >1000  
+  
+  FDR=0.1
+  r<-dim(Y)[2]
+  SF<-rep(0,r)
+  for(i in 1:r){
+    J<-which(Y[,i]!=0)
+    SF[i]<-exp(mean(log(Y[J,i])))
+    }
+  sf<-SF/exp(mean(log(SF))) #scale geometric means by the geometric
+  
+  YnormGM<-Y%*%diag(1/sf)
+  
+  f<-1/60 #Frequency of the environmental switching
+  Sin<-sin(2*pi*f*CD[,"TimePoint"])
+  Cos<-cos(2*pi*f*CD[,"TimePoint"])
+  CD<-data.frame(CD,Sin,Cos)
+
+  #Identify periodically oscillating genotypes
+  ddsPeriodic <- DESeqDataSetFromMatrix(countData = Y,
+           colData = CD,
+           design = ~ Replicate + TimePoint + Sin + Cos)
+  sizeFactors(ddsPeriodic)<-sf #set the sizeFactors to be ours
+  ddsPeriodic<-DESeq(ddsPeriodic,fitType='local') #Does the analysis
+
+  ddsAperiodic<-DESeq(ddsPeriodic,test="LRT", reduced=~Replicate+TimePoint)
+  resAperiodic<-results(ddsAperiodic)
+  sum(resAperiodic$padj<FDR)
+#  Jperiodic<- resAperiodic$padj<FDR
+  Jperiodic<- which(resAperiodic$padj<FDR)
+  
+  #Which are not periodic?
+  JNotperiodic<- which(resAperiodic$padj>FDR)
+  Jna <- length(which(is.na(resAperiodic$padj))) #268, these are samples without enough datapoint to do model fitting
+  
+  namesPeriodic<-rownames(resAperiodic)[Jperiodic]
+  length(namesPeriodic)
+  #421
+
+  #Remove genotypes considered periodic and test the rest for cubic behavior
+  ddsCubic <- DESeqDataSetFromMatrix(countData = Y[JNotperiodic,], colData = CD,
+          design = ~ Replicate+I(TimePoint)+I(TimePoint^2)+I(TimePoint^3))
+
+  sizeFactors(ddsCubic)<-sf #set the sizeFactors to be ours
+  ddsCubic<-DESeq(ddsCubic,fitType='local') #Does the analysis
+  
+  #2.Test for significance of cubic terms by running a reduced model with the cubic term and cubic interactions         removed.
+
+  ddsCubicRed<-DESeq(ddsCubic,test="LRT",fitType='local', reduced=~Replicate+I(TimePoint)+I(TimePoint^2))
+
+  resCubicRed<-results(ddsCubicRed)
+  resCubicRed1<-na.omit(resCubicRed)
+  sum(resCubicRed1$padj<FDR)
+  #[1] 220
+
+  J.cubic<-which(resCubicRed$padj<FDR) #These (indices) have significant cubic terms
+  Names.cubic<-rownames(resCubicRed)[J.cubic] #corresponding names
+
+  ddsQuadratic <- DESeqDataSetFromMatrix(countData = Y[JNotperiodic,][-J.cubic,],
+                colData = CD,
+  design = ~ Replicate+I(TimePoint)+I(TimePoint^2))
+
+  sizeFactors(ddsQuadratic)<-sf #set the sizeFactors to be ours
+  ddsQuadratic<-DESeq(ddsQuadratic,fitType='local') #Does the analysis
+  
+  ddsQuadraticRed<-DESeq(ddsQuadratic,test="LRT", reduced=~Replicate+I(TimePoint))
+
+  resQuadraticRed<-results(ddsQuadraticRed)
+  resQuadraticRed1<-na.omit(resQuadraticRed)
+  sum(resQuadraticRed1$padj<FDR)
+  #[1] 615 the number of genotypes with a significant quadratic term
+
+  J.quadratic<-which(resQuadraticRed$padj<FDR)
+  Names.quadratic<-rownames(resQuadraticRed)[J.quadratic]
+
+  J.non.quadratic<-which(!resQuadraticRed$padj<FDR)
+  Names.non.quadratic<-rownames(resQuadraticRed)[-J.quadratic]
+  length(J.non.quadratic)
+  #[1] 2199 Genotypes that are linear, with and without interactions,
+
+  ddsLinear <- DESeqDataSetFromMatrix(countData = 
+                Y[JNotperiodic,][-J.cubic,][-J.quadratic,],
+                colData = CD,
+ design = ~ Replicate+I(TimePoint))
+
+  sizeFactors(ddsLinear)<-sf #set the sizeFactors to be ours
+  ddsLinear<-DESeq(ddsLinear,fitType='local') #Does the analysis
+
+  resLinear<-results(ddsLinear,name="I.TimePoint.")
+  J.linear<-which(resLinear$padj<FDR)
+  Names.linear<-rownames(resLinear)[J.linear] #1267 with timepoint dependence is that true?
+
+  J.non.dependent<-which(!resLinear$padj<FDR)
+  Names.non.dependent<-rownames(resLinear)[J.non.dependent] #1096, should be 1313, that is because there are NAs.
+
+#Make normalized abundance df for downstream use 
+  ynorm_df <- data.frame(CD[,c(1:3)],t(YnormGM))
+  ynorm_df$Data <- form
+#  assign(paste(cond, "ynorm", sep = "_"), ynorm_df)
+  assign(paste(paste(cond, form, sep = "_"), "ynorm", sep = "_"), ynorm_df)
+
+  
+#Make df with behavior type for downstream use
+  non.dep_df<-data.frame(Names.non.dependent,"non_significant")
+  colnames(non.dep_df)<-c("Strain","Polynomial")
+
+  linear_df<-data.frame(Names.linear,"linear")
+  colnames(linear_df)<-c("Strain","Polynomial")
+
+  quadratic_df<-data.frame(Names.quadratic,"quadratic")
+  colnames(quadratic_df)<-c("Strain","Polynomial")
+
+  cubic_df<-data.frame(Names.cubic,"cubic")
+  colnames(cubic_df)<-c("Strain","Polynomial")
+
+if(length(namesPeriodic) > 0) {          
+  periodic_df <- data.frame(namesPeriodic,"periodic")
+  colnames(periodic_df) <-c ("Strain","Polynomial")}
+
+  full_model_df1<-rbind(non.dep_df,linear_df)
+  full_model_df2<-rbind(full_model_df1,quadratic_df)
+  full_model_df<-rbind(full_model_df2,cubic_df)
+  if(length(namesPeriodic) > 0) { 
+  full_model_df<-rbind(full_model_df,periodic_df)
+                                } #total size is 3445 something is missing
+
+  full_model_df$Condition<-cond
+  full_model_df$Data <- form
+  
+#  assign(paste(cond, "full_model", sep = "_"), full_model_df) 
+  assign(paste(paste(cond, form, sep = "_"), "full_model", sep = "_"), full_model_df)
+
+    
+  model_summary<-full_model_df%>%
+    group_by(Polynomial) %>%
+      summarise(count=n())
+  
+  model_summary$Condition<-cond
+  
+#  assign(paste(cond, "model_summary", sep = "_"),model_summary)  
+  assign(paste(paste(cond, form, sep = "_"), "model_summary", sep = "_"), model_summary)
+
+   
+#Create coefficients dataframe for downstream use
+
+cols_df <- data.frame(baseMean=NA, log2FoldChange=NA, lfcSE=NA, stat=NA,pvalue=NA,padj=NA)[numeric(0), ]
+
+if(length(namesPeriodic) > 0) {
+  periodic_coefs <- data.frame(coef(ddsPeriodic)[namesPeriodic,], resAperiodic[Jperiodic,])
+  periodic_coefs$Model<-"Periodic"
+  periodic_coefs$Strain<-rownames(periodic_coefs)
+  colnames(periodic_coefs)[4] <- "I.TimePoint."} else {
+    periodic_coefs <- data.frame(coef(ddsPeriodic)[namesPeriodic,])
+    colnames(periodic_coefs)[4] <- "I.TimePoint."
+    periodic_coefs <- data.frame(periodic_coefs, cols_df)
+  }
+  
+  cubic_coefs<-data.frame(coef(ddsCubic)[Names.cubic,], resCubicRed[J.cubic,])
+  cubic_coefs$Model<-"Cubic"
+  cubic_coefs$Strain<-rownames(cubic_coefs)
+
+  quadratic_coefs<-data.frame(coef(ddsQuadratic)[Names.quadratic,], resQuadraticRed[J.quadratic,])
+  quadratic_coefs$Model<-"Quadratic"
+  quadratic_coefs$Strain<-rownames(quadratic_coefs)
+
+  linear_coefs<-data.frame(coef(ddsLinear)[Names.linear,], resLinear[J.linear,])
+  linear_coefs$Model<-"Linear"
+  linear_coefs$Strain<-rownames(linear_coefs)
+
+  non_dep_coefs<-data.frame(coef(ddsLinear)[Names.non.dependent,], resLinear[J.non.dependent,])
+  non_dep_coefs$Model<-"Non-Significant"
+  non_dep_coefs$Strain<-rownames(non_dep_coefs)
+
+  test1<-bind_rows(periodic_coefs,cubic_coefs)
+  test2<-bind_rows(test1,quadratic_coefs)
+  test3<-bind_rows(test2,linear_coefs)
+  full_coefs<-bind_rows(test3,non_dep_coefs) %>%
+    replace(is.na(.), 0)
+  
+  full_coefs$Condition <- cond
+  full_coefs$Data <- form
+
+  assign(paste(paste(cond, form, sep = "_"), "coef", sep = "_"), full_coefs)
+  }
+
+}
+```
+
+Combine dataframes from all conditions
+```{r}
+
+full_ynorm_Excluded <- rbind(rbind(rbind(rbind(Nlim_Excluded_ynorm, Switch_Excluded_ynorm), Clim_Excluded_ynorm), PulseAS_Excluded_ynorm), PulseGln_Excluded_ynorm)
+full_ynorm_Full <- rbind(rbind(rbind(rbind(Nlim_Full_ynorm, Switch_Full_ynorm), Clim_Full_ynorm), PulseAS_Full_ynorm), PulseGln_Full_ynorm)
+
+full_ynorm <- rbind(full_ynorm_Excluded, full_ynorm_Full)
+#full_ynorm <- rbind(rbind(rbind(rbind(Nlim_ynorm, Switch_ynorm), Clim_ynorm), PulseAS_ynorm), PulseGln_ynorm)
+
+full_model_Excluded <- rbind(rbind(rbind(rbind(Nlim_Excluded_full_model, Switch_Excluded_full_model),Clim_Excluded_full_model), PulseAS_Excluded_full_model), PulseGln_Excluded_full_model)
+full_model_Full <- rbind(rbind(rbind(rbind(Nlim_Full_full_model, Switch_Full_full_model),Clim_Full_full_model), PulseAS_Full_full_model), PulseGln_Full_full_model)
+full_model_conditions <- rbind(full_model_Excluded, full_model_Full)
+
+ggplot(full_model_conditions, aes(x=Condition, fill = Polynomial)) +
+  geom_histogram(stat="count") +
+  facet_wrap(Data~Polynomial)
+
+full_coefs_Excluded <- rbind(rbind(rbind(rbind(Nlim_Excluded_coef, Switch_Excluded_coef), Clim_Excluded_coef),PulseAS_Excluded_coef), PulseGln_Excluded_coef)
+full_coefs_Full <- rbind(rbind(rbind(rbind(Nlim_Full_coef, Switch_Full_coef), Clim_Full_coef),PulseAS_Full_coef), PulseGln_Full_coef)
+full_coefs_conditions <- rbind(full_coefs_Excluded, full_coefs_Full)
+
+write_tsv(full_ynorm, paste0(data.directory,"/full_ynorm.txt"))
+write_tsv(full_model_conditions, paste0(data.directory,"/full_model_conditions.txt"))
+write_tsv(full_coefs_conditions, paste0(data.directory,"/full_coefs_conditions.txt"))
+
+```
+
+
+Make DF with mean growth rate
+```{r cars}
+# First and last time points.
+t=c(0,240)
+
+# Length of periods
+f=1/60
+
+mean_growth_df <- full_coefs_conditions %>%
+  mutate(T0_Rep1 = `Intercept`+`I.TimePoint.`*t[1]+`I.TimePoint.2.`*t[1]^2+`I.TimePoint.3.`*t[1]^3+`Sin`*sin(2*pi*f*t[1])+`Cos`*cos(2*pi*f*t[1]),
+         T240_Rep1 = `Intercept`+`I.TimePoint.`*t[2]+`I.TimePoint.2.`*t[2]^2+`I.TimePoint.3.`*t[2]^3+`Sin`*sin(2*pi*f*t[2])+`Cos`*cos(2*pi*f*t[2]),
+         T0_Rep2 = `Replicate_2_vs_1`+`Intercept`+`I.TimePoint.`*t[1]+`I.TimePoint.2.`*t[1]^2+`I.TimePoint.3.`*t[1]^3+`Sin`*sin(2*pi*f*t[1])+`Cos`*cos(2*pi*f*t[1]),
+         T240_Rep2 = `Replicate_2_vs_1`+`Intercept`+`I.TimePoint.`*t[2]+`I.TimePoint.2.`*t[2]^2+`I.TimePoint.3.`*t[2]^3+`Sin`*sin(2*pi*f*t[2])+`Cos`*cos(2*pi*f*t[2]),
+         T0_Rep3 = `Replicate_3_vs_1`+`Intercept`+`I.TimePoint.`*t[1]+`I.TimePoint.2.`*t[1]^2+`I.TimePoint.3.`*t[1]^3+`Sin`*sin(2*pi*f*t[1])+`Cos`*cos(2*pi*f*t[1]),
+         T240_Rep3 = `Replicate_3_vs_1`+`Intercept`+`I.TimePoint.`*t[2]+`I.TimePoint.2.`*t[2]^2+`I.TimePoint.3.`*t[2]^3+`Sin`*sin(2*pi*f*t[2])+`Cos`*cos(2*pi*f*t[2]),
+         T0_mean = rowMeans(cbind(T0_Rep1, T0_Rep2, T0_Rep3), na.rm = TRUE),
+         T240_mean = rowMeans(cbind(T240_Rep1, T240_Rep2, T240_Rep3), na.rm = TRUE)) %>%
+          mutate(MeanGrowthRate=(T240_mean-T0_mean)/240)
+
+#For geomtric mean growth rate:
+#From Figure3.Rmd
+#geometric mean function
+
+#gm_mean = function(x, na.rm=TRUE){
+#  exp(sum(log(x[x > 0]), na.rm=na.rm) / 240) #I divided by 240 instead of length(x) because that is the number of hours
+#}
+
+#gm_test <- full_ynorm_gathered %>%
+#  group_by(Condition, Replicate, Strain) %>%
+#    mutate(GeoMeanGrowth = gm_mean(Ynorm),
+#           ArithmeticMeanGrowth = mean(Ynorm)) %>%
+#      dplyr::select(-TimePoint, -Ynorm) %>%
+#        distinct() %>%
+#          group_by(Condition, Strain) %>%
+#            mutate(MeanGeoMeanGrowth = mean(GeoMeanGrowth),
+#                   MeanArithmeticMeanGrowth = mean(ArithmeticMeanGrowth)) %>%
+#                     dplyr::select(-Replicate, -GeoMeanGrowth, -ArithmeticMeanGrowth) %>%
+#                       distinct()
+
+#gm_test2 <- mean_growth_df %>%
+#  dplyr::select(Strain, Condition, MeanGrowthRate) %>%
+#    left_join(., gm_test, by = c("Strain", "Condition"))
+
+#ggplot(gm_test2, aes(x = MeanArithmeticMeanGrowth, y = MeanGrowthRate)) +
+#  geom_point() +
+#  scale_x_log10() +
+#  scale_y_log10()
+
+```
+
+Test piecewise growth and different intervals for growth rate measurements
+```{r}
+#Should this be deleted?
+test <- full_ynorm %>%
+  gather(Strain, y_norm, -TimePoint, -Condition, -Replicate, -Data) %>%
+    group_by(Condition, Replicate, Strain, Data) %>%
+      mutate(PW_GR = (y_norm - lag(y_norm))/(TimePoint - lag(TimePoint))) %>%
+        dplyr::select(-y_norm) %>%
+          group_by(Condition, TimePoint, Data) %>%
+            mutate(Mean_RelativeFitness = mean(PW_GR)) %>%
+             ungroup() %>%
+              complete(TimePoint, Condition, Replicate, Data, fill = list(0))
+
+#ggplot(filter(test, Replicate == 1, Condition %in% c("Clim","Nlim","Switch")), aes(x = Condition, y = PW_GR, group = Condition, fill = factor(stat(quantile)))) +
+#  stat_density_ridges(
+#    geom = "density_ridges_gradient",
+#    calc_ecdf = TRUE,
+#    quantiles = c(0.025, 0.975))
+#  geom_histogram(bins = 40, color = "black",aes(y=count_frequency)) +
+#  geom_density_ridges(aes(fill = Condition))
+```
+
+
+```{r pressure, echo=FALSE}
+#Plot the DFEs for 
+#ggplot(mean_growth_df, aes(x=MeanGrowthRate)) +
+#  geom_histogram() +
+#  facet_wrap(~Condition)
+
+#Make binned table and plot the binned DFE
+bin_limits <- seq(0, 0.054, by= 0.002)
+hist_breaks <- c(-rev(bin_limits[-1]), bin_limits)
+
+mode <- function(x) {
+     ux <- unique(x)
+     ux[which.max(tabulate(match(x, ux)))]
+ }
+#Table_MG_Summary <- Table_MG %>%
+#  group_by(Condition, bins) %>%
+#    dplyr::summarise(sum_freq = sum(count_frequency),
+#                   n=n(),
+#                   sum_mean_freq = sum(mean_strain_freq))
+
+#Get stats for mean growth rate
+Stat_table_MG <- mean_growth_df %>%
+    group_by(Condition, Data) %>%
+     summarise(Mode = mode(MeanGrowthRate), Median = median(MeanGrowthRate), Mean = mean(MeanGrowthRate), Max = max(MeanGrowthRate), Min = min(MeanGrowthRate), Variance = var(MeanGrowthRate)) %>%
+       mutate(Range = Max - Min)
+
+#Trying to get the proportions, check where NAs are coming from
+#adjTest <- data %>%
+#  select(-DOWN, -UP, -Tag_Ratio) %>%
+#   spread(Replicate, as.numeric(Sum_Tag)) %>%
+#     mutate(across(c(`1`, `2`, `3`), na_if, 0))
+#    replace(is.na(.), 0) %>%
+#       mutate(adjSumTag = `1`+`2`+`3`) %>%
+        #replace(is.na(.), 0) %>% 
+#         group_by(Condition, TimePoint) %>%  
+#          mutate(adjLibSize = sum(adjSumTag, na.rm=T),
+#                  adjCountProp = adjSumTag/adjLibSize) %>%
+#             ungroup() %>%
+#               select(TimePoint, Condition, Strain, adjCountProp) %>%
+#                 spread(TimePoint, adjCountProp) %>%
+#                    inner_join(mean_growth_df, by = c("Condition", "Strain")) %>%
+#                      group_by(Condition) %>%
+#                        arrange(MeanGrowthRate) %>%
+#                          mutate(bins = cut(MeanGrowthRate, breaks=hist_breaks)) %>%
+#                            group_by(Condition, bins) %>%
+#                              mutate(Prop_t0 = sum(`0`, na.rm=T),
+#                                     Prop_t240 = sum(`240`, na.rm=T),
+#                                     Delta_Prop_Pct = (Prop_t240 - Prop_t0)*100,
+#                                     n=n())
+
+
+# Make table with proportions and mean growth rates
+adjTest <- BarSeq1 %>%
+  filter(Data == "Full") %>%
+  dplyr::select(-Data) %>%
+  gather(key = Strain, value = Sum_Tag, -TimePoint, -Condition, -Replicate) %>%
+    group_by(TimePoint, Condition, Replicate) %>%
+      mutate(LibrarySize = sum(Sum_Tag, na.rm=T),
+             Proportion = Sum_Tag/LibrarySize) %>%
+        dplyr::select(-Sum_Tag, -LibrarySize) %>%
+          mutate(Proportion = as.numeric(na_if(Proportion, 0))) %>%
+            spread(Replicate, Proportion) %>%
+              rowwise() %>%
+                mutate(MeanProportion = (mean(c(`1`, `2`, `3`), na.rm=T))) %>%
+                 dplyr::select(-`1`, -`2`, -`3`) %>%
+                   spread(TimePoint, MeanProportion) %>%#fine
+                    inner_join(mean_growth_df, by = c("Condition", "Strain")) %>%
+                      group_by(Condition) %>%
+                        arrange(MeanGrowthRate) %>%
+                          mutate(bins = cut(MeanGrowthRate, breaks=hist_breaks)) %>%
+                            group_by(Condition, bins) %>%
+                              mutate(Prop_t0 = sum(`0`, na.rm=T),
+                                     Prop_t240 = sum(`240`, na.rm=T),
+                                     Delta_Prop_Pct = (Prop_t240 - Prop_t0)*100,
+                                     n=n())
+
+
+#Make x-axis labels for bar plot
+hist_breaks_labels <- hist_breaks
+hist_breaks_labels[c(2:4, 6:9, 11:14, 16:19, 21:24, 26:29, 31:34, 36:39, 41:44, 46:49, 51:54)] <- ''
+#hist_breaks_labels[seq(2, length(hist_breaks_labels), by = 2)] <- ''
+
+
+#Plot DFE across three condition
+p1 <- ggplot(filter(adjTest, Condition %in% c("Nlim","Clim","Switch"), Data == "Full")) +
+  geom_bar(stat = "identity", position = position_dodge(), aes(x = bins, y = n, fill = Condition), color = "black") +
+  facet_wrap(~Condition) +
+  scale_x_discrete(labels = c(0.05, 0.03), breaks = c(0.05,0.03), drop=FALSE) +
+  scale_fill_manual(values=c(Clim_col, Nlim_col, Switch_col)) +
+  xlab("Growth Rate (hr-1)") +
+  ylab("Genotype Frequency") +
+  theme(axis.text=element_text(size=12),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title=element_text(size=14),
+        legend.text=element_text(size=12),
+        legend.title=element_text(size=14),
+        panel.background = element_rect(fill = "white",
+                                        colour = "black",
+                                        size = 0.75, linetype = "solid"),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text.x = element_blank())
+
+p2  <- ggplot(filter(adjTest, Condition %in% c("Nlim","Clim","Switch"), Data == "Full")) +
+  geom_bar(stat = "identity", position = position_dodge(), aes(x = bins, y = Delta_Prop_Pct, fill = Condition), color = "black") +
+  facet_wrap(~Condition) +
+  scale_x_discrete(labels = hist_breaks_labels, drop=FALSE) +
+  scale_fill_manual(values=c(Clim_col, Nlim_col, Switch_col)) +
+  xlab("Growth Rate (hr-1)") +
+  ylab("Percent Change in Population Proportion") +
+  theme(axis.text=element_text(size=12),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title=element_text(size=14),
+        legend.title=element_text(size=14),
+        panel.background = element_rect(fill = "white",
+                                        colour = "black",
+                                        size = 0.75, linetype = "solid"),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        panel.grid.major.x = element_line(size = 0.25, colour = "white"),
+        panel.grid.major.y = element_line(size = 0.25, colour = "gray"),
+        strip.text.x = element_blank())
+
+
+#pdf("/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure2/Figure2C", width=12, height=6)
+
+p <- p1 + p2 + plot_layout(ncol=1,heights=c(2,2))
+
+ggsave(plot = p, height=9, width=12, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure2/Figure2C.pdf", useDingbats=FALSE)
+
+####Supplementary including pulse
+p3 <- ggplot(filter(adjTest, Condition %in% c("Nlim","Clim", "PulseAS", "PulseGln", "Switch"), Data == "Full")) +
+  geom_bar(stat = "identity", position = position_dodge(), aes(x = bins, y = n, fill = Condition), color = "black") +
+  facet_wrap(~Condition, ncol=5) +
+  scale_x_discrete(labels = hist_breaks_labels, drop=FALSE) +
+  scale_fill_manual(values=c(Clim_col, Nlim_col, PulseAS_col, PulseGln_col, Switch_col)) +
+  xlab("Growth Rate (hr-1)") +
+  ylab("Genotype Frequency") +
+  theme(axis.text=element_text(size=12),
+        panel.grid.major.x = element_line(size = 0.25, colour = "white"),
+        panel.grid.major.y = element_line(size = 0.25, colour = "gray"),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title=element_text(size=14),
+        legend.text=element_text(size=12),
+        legend.title=element_text(size=14),
+        panel.background = element_rect(fill = "white",
+                                        colour = "black",
+                                        size = 0.75, linetype = "solid"),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text.x = element_blank())
+
+p4  <- ggplot(filter(adjTest, Condition %in% c("Nlim","Clim", "PulseAS", "PulseGln", "Switch"), Data == "Full")) +
+  geom_bar(stat = "identity", position = position_dodge(), aes(x = bins, y = Delta_Prop_Pct, fill = Condition), color = "black") +
+  facet_wrap(~Condition, ncol=5) +
+  scale_x_discrete(labels = hist_breaks_labels, drop=FALSE) +
+  scale_fill_manual(values=c(Clim_col, Nlim_col, PulseAS_col, PulseGln_col, Switch_col)) +
+  xlab("Growth Rate (hr-1)") +
+  ylab("Percent Change in Population Proportion") +
+  theme(axis.text=element_text(size=12),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title=element_text(size=14),
+        legend.text=element_text(size=12),
+        legend.title=element_text(size=14),
+#        panel.background = element_rect(fill = "white",
+#                                        colour = "black",
+#                                        size = 0.75, linetype = "solid"),
+        panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_line(size = 0.25, colour = "white"),
+        panel.grid.major.y = element_line(size = 0.25, colour = "gray"),
+        strip.background = element_blank(),
+        strip.text.x = element_blank())
+
+p <- p3 + p4 + plot_layout(ncol=1,heights=c(2,2))
+
+ggsave(plot = p, height=9, width=15, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Figure2C-1.pdf", useDingbats=FALSE)
+ 
+```
+
+
+Testing the effect of strain number over time
+```{r}
+#Looking at the change in strains represented over time
+#adjTest_gathered <- adjTest %>%
+#  gather(TimePoint, Proportion, `0`, `24`, `48`, `72`, `96`, `120`, `144`, `168`, `192`, `240`)
+
+#TotalStrain_df <- adjTest_gathered %>%
+#  group_by(TimePoint, Condition, Data) %>%
+#    filter(!is.na(Proportion)) %>%
+#      filter(Data == "Full") %>%
+#       mutate(TotalStrainNumber = n())
+
+#p5 <- ggplot(TotalStrain_df, aes(x = as.numeric(TimePoint), y = TotalStrainNumber, color = Condition)) +
+#  geom_line() +
+#  geom_point() +
+#  scale_color_manual(values=c(Clim_col, Nlim_col, PulseAS_col, PulseGln_col, Switch_col)) +
+#  ylim(0, 4000) +
+#  ylab("Total Strain Number") +
+#  xlab("Time (hrs)") 
+#  facet_wrap(~Condition)
+
+#ggsave(plot = p5, height=3, width=4, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Figure2C-2.pdf", useDingbats=FALSE)
+
+#dev.off()  
+#Testing a different df for strain number with all three replicates
+
+Strain_Number <- BarSeqOrd %>%
+  gather(Strain, Norm_Count, -TimePoint, -Replicate, -Condition, -Data) %>%
+    dplyr::filter(Norm_Count > 0, Data == "Full") %>%
+      group_by(TimePoint, Condition, Replicate) %>%
+          summarise(TotalStrainNumber = n())
+          
+p5 <- ggplot(Strain_Number, aes(x = as.numeric(TimePoint), y = TotalStrainNumber, color = Condition, shape = as.character(Replicate))) +
+  geom_smooth(method = "lm", aes(group=Condition)) +
+  geom_point() +
+  scale_color_manual(values=c(Clim_col, Nlim_col, PulseAS_col, PulseGln_col, Switch_col)) +
+  ylim(0, 4000) +
+  ylab("Total Strain Number") +
+  xlab("Time (hrs)") +
+  facet_wrap(~Condition, ncol = 5) +
+  theme(strip.background = element_blank())
+
+ggsave(plot = p5, height=3, width=15, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/suppfig5.pdf", useDingbats=FALSE)
+
+
+```
+
+Make dataframe of extinct genotypes for each condition
+```{r}
+BiocManager::install("upSetR", character.only = TRUE)
+BiocManager::install("ComplexHeatmap", character.only = TRUE)
+#library(VennDiagram)
+library("upSetR")
+library("ComplexHeatmap")
+
+#data starts with 3906 total strains
+#test <-data %>%      
+#        filter(TimePoint == 240) %>%
+
+test <- TotalStrain_df %>%
+            ungroup() %>%
+              filter(TimePoint == 240) %>%
+                dplyr::select(Condition, Strain, TotalStrainNumber, T240_mean) %>%
+                  tidyr::spread(Strain, T240_mean) %>%
+                    gather(Strain, T240_mean_ynorm, -Condition, -TotalStrainNumber)
+
+test1 <- test %>%
+  group_by(Condition) %>%
+    filter(is.na(T240_mean_ynorm)) %>%
+      dplyr::select(-T240_mean_ynorm, -TotalStrainNumber) %>%
+        mutate(count = 1) %>%
+          spread(Condition, count) %>%
+            as.data.frame() %>%
+              replace(is.na(.), 0)
+  
+rownames(test1) <- test1$Strain
+test1 <- test1[, -1]
+
+col_list<-as.list(c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2", "black"))
+m = make_comb_mat(test1)
+UpSet(m, top_annotation = HeatmapAnnotation(
+	degree = as.character(comb_degree(m)),
+	col = list(degree = c("1" = "darkgoldenrod4", "2" = "goldenrod3", "3" = "lightgoldenrod2", "4" = "black")),
+	"Intersection\nsize" = anno_barplot(comb_size(m), 
+		border = FALSE, 
+		gp = gpar(fill = "black"), 
+		height = unit(2, "cm")
+	), 
+	annotation_name_side = "left", 
+	annotation_name_rot = 0),
+	comb_col = c("darkgoldenrod4", "goldenrod3", "lightgoldenrod2", "black")[comb_degree(m)], left_annotation = rowAnnotation(
+	"Set size" = anno_barplot(set_size(m), 
+		border = FALSE,
+		gp = gpar(fill = c(Clim_col, Nlim_col, PulseAS_col,PulseGln_col, Switch_col), col = FALSE), 
+		width = unit(2, "cm")
+	)), right_annotation = NULL)
+
+#test making matrix where columns are conditions, and rows are strains and presence or absence is 0 and 1
+
+#Downstream overrepresentation analysis
+
+```
+
+#Violin plots that show the change in genotype fitness
+#Decide whether this should be included in the paper or not
+```{r}
+library(ggrepel)
+
+violin_GR <- mean_growth_df %>%
+  filter(Data == "Full") %>%
+  dplyr::select(Condition, Strain, MeanGrowthRate) %>%
+  mutate(Condition = fct_relevel(Condition, c("Nlim", "Switch", "Clim")))
+
+top_clim_performers <- violin_GR %>%
+  filter(Condition %in% c("Clim", "Switch")) %>%
+  filter(Strain %in% c("YDR277C", "YLR006C", "YLR113W")) %>%
+  mutate(Condition = fct_relevel(Condition, c("Switch", "Clim")))
+
+top_nlim_performers <- violin_GR %>%
+  filter(Condition %in% c("Nlim", "Switch")) %>%
+  filter(Strain %in% c("YFL021W", "YCR095C", "YLR386W")) %>%
+  mutate(Condition = fct_relevel(Condition, c("Nlim", "Switch")))
+
+low_clim_performers <- violin_GR %>%
+  filter(Condition %in% c("Clim", "Switch")) %>%
+  filter(Strain %in% c("YGR193C", "YKL168C", "YAL049C", "YDR048C", "YMR111C")) %>%
+  mutate(Condition = fct_relevel(Condition, c("Switch", "Clim")))
+
+low_nlim_performers <- violin_GR %>%
+  filter(Condition %in% c("Nlim", "Switch")) %>%
+  filter(Strain %in% c("YOL004W", "YEL061C", "YGR092W", "YEL033W", "YDR225W")) %>%
+  mutate(Condition = fct_relevel(Condition, c("Nlim", "Switch")))
+
+
+ggplot(filter(violin_GR, Condition %in% c("Clim", "Switch", "Nlim")), aes(x = Condition, y = MeanGrowthRate, color = Condition, fill = Condition)) +
+  geom_violin(trim = F, alpha = 0.3) +
+  geom_boxplot(width=0.07, fill="white", outlier.size = 0, alpha = 0.7) +
+  geom_text_repel(data=top_clim_performers, aes(label=Strain), col = "black", size=3) +
+  geom_line(data=top_clim_performers, aes(group = Strain, color = Condition), alpha = 0.5) +
+  geom_text_repel(data=top_nlim_performers, aes(label=Strain), col = "black", size=3) +
+  geom_line(data=top_nlim_performers, aes(group = Strain, color = Condition)) +
+  geom_line(data=low_nlim_performers, aes(group = Strain, color = Condition)) +
+  geom_line(data=low_clim_performers, aes(group = Strain, color = Condition))
+  
+  
+  
+```
+
+
+Perform gene-set-enrichment
+```{r}
+organism <- "org.Sc.sgd.db"
+
+GOterm_baseList <- data %>%
+   dplyr::select(-TimePoint, -Condition, -Replicate) %>%
+      colnames()
+
+#geneList <- as.character(GOterm_baseList[-3907,])
+
+annotations_orgDb <- AnnotationDbi::select(org.Sc.sgd.db, # database
+                                     keys = (GOterm_baseList),
+                                     columns = c("ENSEMBL", "GENENAME"), #information to retreive for given data
+                                     keytype = "ENSEMBL") # type of data given in 'keys' argument
+
+GO_df <- adjTest %>%
+              ungroup() %>%
+                dplyr::select(Condition, Strain, MeanGrowthRate) %>%
+                  distinct()
+
+Switch_gene_list <- GO_df %>%
+                      filter(Condition == "Switch") %>%
+                        dplyr::select(MeanGrowthRate) %>%
+                          unlist()
+                          
+        
+names(Switch_gene_list) <- GO_df %>%
+                      filter(Condition == "Switch") %>%
+                        dplyr::select(Strain) %>%
+                          unlist()
+  
+# omit any NA values 
+#Switch_gene_list<-na.omit(Switch_gene_list)
+# sort the list in decreasing order (required for clusterProfiler)
+Switch_gene_list = sort(Switch_gene_list, decreasing = TRUE)
+
+gse_Switch <- gseGO(geneList = Switch_gene_list, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = organism, 
+             pAdjustMethod = "none")
+
+g1 <- enrichplot::dotplot(gse_Switch, showCategory=10, split=".sign") + facet_grid(.~.sign)
+
+Clim_gene_list <- GO_df %>%
+                      filter(Condition == "Clim") %>%
+                        dplyr::select(MeanGrowthRate) %>%
+                          unlist()
+                          
+        
+names(Clim_gene_list) <- GO_df %>%
+                      filter(Condition == "Clim") %>%
+                        dplyr::select(Strain) %>%
+                          unlist()
+  
+# omit any NA values 
+#Switch_gene_list<-na.omit(Switch_gene_list)
+# sort the list in decreasing order (required for clusterProfiler)
+Clim_gene_list = sort(Clim_gene_list, decreasing = TRUE)
+
+gse_Clim <- gseGO(geneList = Clim_gene_list, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = organism, 
+             pAdjustMethod = "none")
+
+g2 <- enrichplot::dotplot(gse_Clim, showCategory=10, split=".sign") + facet_grid(.~.sign)
+
+Nlim_gene_list <- GO_df %>%
+                      filter(Condition == "Nlim") %>%
+                        dplyr::select(MeanGrowthRate) %>%
+                          unlist()
+                          
+        
+names(Nlim_gene_list) <- GO_df %>%
+                      filter(Condition == "Nlim") %>%
+                        dplyr::select(Strain) %>%
+                          unlist()
+  
+# omit any NA values 
+#Switch_gene_list<-na.omit(Switch_gene_list)
+# sort the list in decreasing order (required for clusterProfiler)
+Nlim_gene_list = sort(Nlim_gene_list, decreasing = TRUE)
+
+gse_Nlim <- gseGO(geneList = Nlim_gene_list, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = organism, 
+             pAdjustMethod = "none")
+
+g3 <- enrichplot::dotplot(gse_Nlim, showCategory=10, split=".sign") + facet_grid(.~.sign)
+
+PulseAS_gene_list <- GO_df %>%
+                      filter(Condition == "PulseAS") %>%
+                        dplyr::select(MeanGrowthRate) %>%
+                          unlist()
+                          
+        
+names(PulseAS_gene_list) <- GO_df %>%
+                      filter(Condition == "PulseAS") %>%
+                        dplyr::select(Strain) %>%
+                          unlist()
+  
+# sort the list in decreasing order (required for clusterProfiler)
+PulseAS_gene_list = sort(PulseAS_gene_list, decreasing = TRUE)
+
+gse_PulseAS <- gseGO(geneList = PulseAS_gene_list, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = organism, 
+             pAdjustMethod = "none")
+
+g4 <- enrichplot::dotplot(gse_PulseAS, showCategory=10, split=".sign") + facet_grid(.~.sign)
+
+PulseGln_gene_list <- GO_df %>%
+                      filter(Condition == "PulseGln") %>%
+                        dplyr::select(MeanGrowthRate) %>%
+                          unlist()
+                          
+        
+names(PulseGln_gene_list) <- GO_df %>%
+                      filter(Condition == "PulseGln") %>%
+                        dplyr::select(Strain) %>%
+                          unlist()
+  
+# sort the list in decreasing order (required for clusterProfiler)
+PulseGln_gene_list = sort(PulseGln_gene_list, decreasing = TRUE)
+
+gse_PulseGln <- gseGO(geneList = PulseGln_gene_list, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = organism, 
+             pAdjustMethod = "none")
+
+g5 <- enrichplot::dotplot(gse_PulseGln, showCategory=10, split=".sign") + facet_grid(.~.sign)
+
+
+#Merge data sets
+num <- 8 #Number of selected GO term
+
+gse_Nlim_df1 <- arrange(gse_Nlim[,], desc(NES))
+gse_Nlim_df <- rbind(head(gse_Nlim_df1, n = num), tail(gse_Nlim_df1, n = num))
+
+gse_Clim_df1 <- arrange(gse_Clim[,], desc(NES))
+gse_Clim_df <- rbind(head(gse_Clim_df1, n = num), tail(gse_Clim_df1, n = num))
+
+gse_Switch_df1 <- arrange(gse_Switch[,], desc(NES))
+gse_Switch_df <- rbind(head(gse_Switch_df1, n = num), tail(gse_Switch_df1, n = num))
+
+gse_PulseAS_df1 <- arrange(gse_PulseAS[,], desc(NES))
+gse_PulseAS_df <- rbind(head(gse_PulseAS_df1, n = num), tail(gse_PulseAS_df1, n = num))
+
+gse_PulseGln_df1 <- arrange(gse_PulseGln[,], desc(NES))
+gse_PulseGln_df <- rbind(head(gse_PulseGln_df1, n = num), tail(gse_PulseGln_df1, n = num))
+
+gse_Nlim_df$Condition = "Nlim"
+gse_Clim_df$Condition = "Clim"
+gse_Switch_df$Condition = "Switch"
+gse_PulseAS_df$Condition = "PulseAS"
+gse_PulseGln_df$Condition = "PulseGln"
+
+full_GO <- rbind(rbind(rbind(rbind(gse_Nlim_df, gse_Clim_df), gse_Switch_df), gse_PulseAS_df), gse_PulseGln_df)
+
+full_GO$type = "increased fitness"
+full_GO$type[full_GO$NES < 0] = "decreased fitness" 
+
+full_GO <- full_GO %>% 
+  mutate(Condition = fct_relevel(Condition, c("Nlim", "Switch", "Clim", "PulseAS", "PulseGln"))) %>%
+    mutate(core_enrichment = fct_relevel(core_enrichment, sort)) #sort is supposed to relvel the description, needs a better way to group categories based on slim categories, but for now it's okay.
+
+
+#Test
+#dot_df = gse_PulseGln[,] ## small dataset
+#dot_df$type = "upregulated"
+#dot_df$type[dot_df$NES < 0] = "downregulated"
+
+g <- ggplot(full_GO, aes(x = Condition, y = Description)) + 
+               geom_point(aes(size = setSize, color = type)) +
+               theme_bw(base_size = 14) +
+#        scale_colour_gradient(limits=c(-3, 3), low="red") +
+        ylab(NULL) +
+        ggtitle("GO pathway enrichment")
+
+#p + facet_grid(.~type)
+
+ggsave(plot = g, height=10, width=14, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/supplement/figures/Figure2C-3.pdf", useDingbats=FALSE)
+
+#end of suppl figure for GO terms
+
+
+Nlim_gene_list <- GO_df %>%
+                      filter(Condition == "Nlim") %>%
+                        dplyr::select(MeanGrowthRate) %>%
+                          unlist()
+
+Nlim_gene_list = sort(Nlim_gene_list, decreasing = TRUE)
+
+gse_Nlim <- gseGO(geneList =Nlim_gene_list, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = organism, 
+             pAdjustMethod = "none")
+
+p <- p1 + p2 + plot_layout(ncol=1,heights=c(2,2))
+
+ggsave(plot = p, height=6, width=8, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure2/Figure2C.pdf", useDingbats=FALSE)
+                          
+        
+names(Nlim_gene_list) <- GO_df %>%
+                      filter(Condition == "Nlim") %>%
+                        dplyr::select(Strain) %>%
+                          unlist() %>%
+                            clusterProfiler::bitr(., fromType="ENSEMBL", toType="ENTREZID", OrgDb = "org.Sc.sgd.db") %>%
+  dplyr::select(ENTREZID)
+
+# omit any NA values 
+#Switch_gene_list<-na.omit(Switch_gene_list)
+# sort the list in decreasing order (required for clusterProfiler)
+Nlim_gene_list = sort(Nlim_gene_list, decreasing = TRUE)
+
+gse_Nlim <- gseGO(geneList = Nlim_gene_list, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = organism, 
+             pAdjustMethod = "none")
+
+p <- p1 + p2 + plot_layout(ncol=1,heights=c(2,2))
+
+ggsave(plot = p, height=6, width=8, dpi=200, filename="/Users/farah/Google Drive/Abdul-Rahman et al Barseq/figures/Figure2/Figure2C.pdf", useDingbats=FALSE)
+```
+
